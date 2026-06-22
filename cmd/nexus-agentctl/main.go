@@ -1,6 +1,6 @@
-// Comanda nexus-agentctl este un utilitar de dezvoltare pentru a genera
-// înregistrări noi în configs/agents.json: calculează secret_hash fără ca
-// secretul în clar să fie scris vreodată pe disc de către acest program.
+// The nexus-agentctl command is a development utility for generating
+// new entries in configs/agents.json: it computes secret_hash without
+// this program ever writing the plaintext secret to disk.
 package main
 
 import (
@@ -14,14 +14,14 @@ import (
 )
 
 func main() {
-	agentID := flag.String("agent-id", "", "ID-ul agentului (obligatoriu)")
-	secret := flag.String("secret", "", "Secretul de bootstrap, în clar — folosit doar pentru a calcula hash-ul (obligatoriu)")
-	scopes := flag.String("scopes", "", "Listă de scope-uri permise, separate prin virgulă, ex: llm:openai:invoke,tools:internal:invoke")
-	maxTTL := flag.Int("max-ttl-seconds", 0, "TTL maxim opțional pentru tokenurile acestui agent (0 = folosește default_max_ttl_seconds din registru)")
+	agentID := flag.String("agent-id", "", "the agent's ID (required)")
+	secret := flag.String("secret", "", "the bootstrap secret, in plaintext — used only to compute the hash (required)")
+	scopes := flag.String("scopes", "", "comma-separated list of allowed scopes, e.g.: llm:openai:invoke,tools:internal:invoke")
+	maxTTL := flag.Int("max-ttl-seconds", 0, "optional max TTL for this agent's tokens (0 = use the registry's default_max_ttl_seconds)")
 	flag.Parse()
 
 	if *agentID == "" || *secret == "" {
-		fmt.Fprintln(os.Stderr, "eroare: --agent-id și --secret sunt obligatorii")
+		fmt.Fprintln(os.Stderr, "error: --agent-id and --secret are required")
 		flag.Usage()
 		os.Exit(1)
 	}
@@ -45,11 +45,11 @@ func main() {
 
 	out, err := json.MarshalIndent(rec, "", "  ")
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "eroare la serializare:", err)
+		fmt.Fprintln(os.Stderr, "serialization error:", err)
 		os.Exit(1)
 	}
 
-	fmt.Println("// Adaugă această înregistrare în lista \"agents\" din configs/agents.json:")
+	fmt.Println("// Add this entry to the \"agents\" list in configs/agents.json:")
 	fmt.Println(string(out))
-	fmt.Fprintln(os.Stderr, "\nNotă: secretul în clar NU este salvat nicăieri de acest program — reține-l separat și distribuie-l agentului printr-un canal sigur.")
+	fmt.Fprintln(os.Stderr, "\nNote: the plaintext secret is NOT saved anywhere by this program — keep it separately and distribute it to the agent through a secure channel.")
 }

@@ -1,21 +1,20 @@
-// suspension.go declară punctul de extensie prin care
-// internal/compliance.SuspensionRegistry poate revoca instantaneu
-// dreptul unui agent de a fi validat sau de a primi tokenuri noi —
-// kill-switch-ul cerut de Articolul 14 (supervizare umană). Pachetul
-// identity nu importă compliance; orice implementare care satisface
-// această interfață (duck typing) poate fi conectată din main.go.
+// suspension.go declares the extension point through which
+// internal/compliance.SuspensionRegistry can instantly revoke an
+// agent's right to be validated or to receive new tokens — the kill
+// switch required by Article 14 (human oversight). The identity package
+// doesn't import compliance; any implementation satisfying this
+// interface (duck typing) can be wired in from main.go.
 package identity
 
-// SuspensionChecker decide dacă un agent este suspendat de un operator.
-// Al doilea rezultat este motivul suspendării, util în mesajele de eroare
-// și în jurnalizare.
+// SuspensionChecker decides whether an agent is suspended by an
+// operator. The second return value is the suspension reason, useful
+// in error messages and logging.
 type SuspensionChecker interface {
 	IsSuspended(agentID string) (bool, string)
 }
 
-// NoopSuspensionChecker este implementarea implicită: niciun agent nu
-// este vreodată suspendat. Folosită când nicio implementare reală nu
-// este conectată.
+// NoopSuspensionChecker is the default implementation: no agent is ever
+// suspended. Used when no real implementation is wired in.
 type NoopSuspensionChecker struct{}
 
 func (NoopSuspensionChecker) IsSuspended(_ string) (bool, string) { return false, "" }

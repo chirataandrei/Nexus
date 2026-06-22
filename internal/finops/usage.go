@@ -1,15 +1,14 @@
-// Package finops implementează ruterul de control financiar al Nexus
-// Trust Protocol: citește consumul real de tokeni din răspunsurile
-// modelelor LLM, îl acumulează per agent/sarcină și aplică bariere "hard"
-// (circuit breaking) direct pe fluxul cererilor — înainte ca o nouă
-// cerere costisitoare să ajungă la model — în loc de rapoarte de cost
-// analizate retrospectiv.
+// Package finops implements Nexus Trust Protocol's financial control
+// router: it reads the real token consumption from LLM model responses,
+// accumulates it per agent/task, and applies "hard" barriers (circuit
+// breaking) directly on the request path — before a new, costly request
+// reaches the model — instead of retrospectively analyzed cost reports.
 package finops
 
 import "encoding/json"
 
-// openAIUsageEnvelope este forma minimă a câmpului "usage" din
-// răspunsurile API OpenAI (chat completions, completions, etc.).
+// openAIUsageEnvelope is the minimal shape of the "usage" field in
+// OpenAI API responses (chat completions, completions, etc.).
 type openAIUsageEnvelope struct {
 	Usage *struct {
 		PromptTokens     int `json:"prompt_tokens"`
@@ -18,8 +17,8 @@ type openAIUsageEnvelope struct {
 	} `json:"usage"`
 }
 
-// anthropicUsageEnvelope este forma minimă a câmpului "usage" din
-// răspunsurile API Anthropic (Messages API).
+// anthropicUsageEnvelope is the minimal shape of the "usage" field in
+// Anthropic API responses (Messages API).
 type anthropicUsageEnvelope struct {
 	Usage *struct {
 		InputTokens  int `json:"input_tokens"`
@@ -27,13 +26,12 @@ type anthropicUsageEnvelope struct {
 	} `json:"usage"`
 }
 
-// ExtractTokens încearcă să citească numărul total de tokeni consumați
-// dintr-un corp de răspuns JSON al unui upstream LLM, recunoscând
-// formatele OpenAI și Anthropic. Returnează ok=false dacă body nu este
-// JSON valid sau nu conține un câmp "usage" recunoscut — ceea ce este
-// normal și de așteptat pentru upstream-uri care nu sunt modele LLM
-// (ex. instrumente interne), caz în care pur și simplu nu se
-// înregistrează niciun cost.
+// ExtractTokens attempts to read the total number of tokens consumed
+// from an LLM upstream's JSON response body, recognizing the OpenAI and
+// Anthropic formats. Returns ok=false if body isn't valid JSON or
+// doesn't contain a recognized "usage" field — which is normal and
+// expected for upstreams that aren't LLM models (e.g. internal tools),
+// in which case simply no cost is recorded.
 func ExtractTokens(body []byte) (int, bool) {
 	var oa openAIUsageEnvelope
 	if err := json.Unmarshal(body, &oa); err == nil && oa.Usage != nil {

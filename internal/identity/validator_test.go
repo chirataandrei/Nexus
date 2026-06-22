@@ -14,7 +14,7 @@ func newTestIssuer(t *testing.T, trustDomain string) *Issuer {
 	t.Helper()
 	iss, err := NewIssuer(trustDomain, 5*time.Minute)
 	if err != nil {
-		t.Fatalf("NewIssuer a eșuat: %v", err)
+		t.Fatalf("NewIssuer failed: %v", err)
 	}
 	return iss
 }
@@ -31,7 +31,7 @@ func TestSPIFFEValidator_AcceptsValidToken(t *testing.T) {
 
 	token, _, err := iss.IssueSVID("agent-1", "task-1", []string{"llm:openai:invoke"}, time.Minute)
 	if err != nil {
-		t.Fatalf("IssueSVID a eșuat: %v", err)
+		t.Fatalf("IssueSVID failed: %v", err)
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/openai/models", nil)
@@ -39,13 +39,13 @@ func TestSPIFFEValidator_AcceptsValidToken(t *testing.T) {
 	meta := metaFor(req, "llm:openai:invoke")
 
 	if err := v.Validate(context.Background(), meta, req); err != nil {
-		t.Fatalf("Validate ar trebui să accepte un token valid cu scope corect: %v", err)
+		t.Fatalf("Validate should accept a valid token with the correct scope: %v", err)
 	}
 	if meta.VerifiedAgentID != "agent-1" {
-		t.Errorf("VerifiedAgentID ar trebui populat, am primit %q", meta.VerifiedAgentID)
+		t.Errorf("VerifiedAgentID should be populated, got %q", meta.VerifiedAgentID)
 	}
 	if meta.SPIFFEID == "" {
-		t.Error("SPIFFEID ar trebui populat după validare cu succes")
+		t.Error("SPIFFEID should be populated after successful validation")
 	}
 }
 
@@ -57,7 +57,7 @@ func TestSPIFFEValidator_RejectsMissingAuthorizationHeader(t *testing.T) {
 	meta := metaFor(req, "")
 
 	if err := v.Validate(context.Background(), meta, req); err == nil {
-		t.Error("Validate ar trebui să respingă o cerere fără antet Authorization")
+		t.Error("Validate should reject a request without an Authorization header")
 	}
 }
 
@@ -67,26 +67,26 @@ func TestSPIFFEValidator_RejectsInsufficientScope(t *testing.T) {
 
 	token, _, err := iss.IssueSVID("agent-1", "task-1", []string{"tools:internal:invoke"}, time.Minute)
 	if err != nil {
-		t.Fatalf("IssueSVID a eșuat: %v", err)
+		t.Fatalf("IssueSVID failed: %v", err)
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/openai/models", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
-	meta := metaFor(req, "llm:openai:invoke") // ruta cere alt scope decât are tokenul
+	meta := metaFor(req, "llm:openai:invoke") // the route requires a different scope than the token has
 
 	if err := v.Validate(context.Background(), meta, req); err == nil {
-		t.Error("Validate ar trebui să respingă un token fără scope-ul cerut de rută")
+		t.Error("Validate should reject a token without the scope the route requires")
 	}
 }
 
 func TestSPIFFEValidator_RejectsWrongTrustDomain(t *testing.T) {
-	iss := newTestIssuer(t, "alt-domeniu.trust")
-	// Validatorul gateway-ului acceptă doar "nexus.trust".
+	iss := newTestIssuer(t, "other-domain.trust")
+	// The gateway's validator only accepts "nexus.trust".
 	v := NewSPIFFEValidator(iss.PublicKey(), "nexus.trust", nil)
 
 	token, _, err := iss.IssueSVID("agent-1", "task-1", []string{"llm:openai:invoke"}, time.Minute)
 	if err != nil {
-		t.Fatalf("IssueSVID a eșuat: %v", err)
+		t.Fatalf("IssueSVID failed: %v", err)
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/openai/models", nil)
@@ -94,7 +94,7 @@ func TestSPIFFEValidator_RejectsWrongTrustDomain(t *testing.T) {
 	meta := metaFor(req, "")
 
 	if err := v.Validate(context.Background(), meta, req); err == nil {
-		t.Error("Validate ar trebui să respingă un token emis pentru alt domeniu de încredere")
+		t.Error("Validate should reject a token issued for a different trust domain")
 	}
 }
 
@@ -109,12 +109,12 @@ func (f fakeSuspensionChecker) IsSuspended(agentID string) (bool, string) {
 
 func TestSPIFFEValidator_RejectsSuspendedAgent(t *testing.T) {
 	iss := newTestIssuer(t, "nexus.trust")
-	suspension := fakeSuspensionChecker{suspendedAgents: map[string]string{"agent-1": "comportament anormal"}}
+	suspension := fakeSuspensionChecker{suspendedAgents: map[string]string{"agent-1": "abnormal behavior"}}
 	v := NewSPIFFEValidator(iss.PublicKey(), "nexus.trust", suspension)
 
 	token, _, err := iss.IssueSVID("agent-1", "task-1", []string{"llm:openai:invoke"}, time.Minute)
 	if err != nil {
-		t.Fatalf("IssueSVID a eșuat: %v", err)
+		t.Fatalf("IssueSVID failed: %v", err)
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/openai/models", nil)
@@ -122,18 +122,18 @@ func TestSPIFFEValidator_RejectsSuspendedAgent(t *testing.T) {
 	meta := metaFor(req, "")
 
 	if err := v.Validate(context.Background(), meta, req); err == nil {
-		t.Error("Validate ar trebui să respingă un agent suspendat, chiar cu token altfel valid")
+		t.Error("Validate should reject a suspended agent, even with an otherwise valid token")
 	}
 }
 
 func TestSPIFFEValidator_AllowsNonSuspendedAgentWithSuspensionCheckerConfigured(t *testing.T) {
 	iss := newTestIssuer(t, "nexus.trust")
-	suspension := fakeSuspensionChecker{suspendedAgents: map[string]string{"agent-altul": "motiv"}}
+	suspension := fakeSuspensionChecker{suspendedAgents: map[string]string{"other-agent": "reason"}}
 	v := NewSPIFFEValidator(iss.PublicKey(), "nexus.trust", suspension)
 
 	token, _, err := iss.IssueSVID("agent-1", "task-1", []string{"llm:openai:invoke"}, time.Minute)
 	if err != nil {
-		t.Fatalf("IssueSVID a eșuat: %v", err)
+		t.Fatalf("IssueSVID failed: %v", err)
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/openai/models", nil)
@@ -141,7 +141,7 @@ func TestSPIFFEValidator_AllowsNonSuspendedAgentWithSuspensionCheckerConfigured(
 	meta := metaFor(req, "llm:openai:invoke")
 
 	if err := v.Validate(context.Background(), meta, req); err != nil {
-		t.Errorf("un agent neasuspendat nu ar trebui afectat de suspendarea altui agent: %v", err)
+		t.Errorf("a non-suspended agent shouldn't be affected by another agent's suspension: %v", err)
 	}
 }
 
@@ -151,7 +151,7 @@ func TestSPIFFEValidator_RejectsExpiredToken(t *testing.T) {
 
 	token, _, err := iss.IssueSVID("agent-1", "task-1", nil, time.Nanosecond)
 	if err != nil {
-		t.Fatalf("IssueSVID a eșuat: %v", err)
+		t.Fatalf("IssueSVID failed: %v", err)
 	}
 	time.Sleep(10 * time.Millisecond)
 
@@ -160,6 +160,6 @@ func TestSPIFFEValidator_RejectsExpiredToken(t *testing.T) {
 	meta := metaFor(req, "")
 
 	if err := v.Validate(context.Background(), meta, req); err == nil {
-		t.Error("Validate ar trebui să respingă un token expirat (TTL extrem de scurt, deja trecut)")
+		t.Error("Validate should reject an expired token (extremely short TTL, already passed)")
 	}
 }

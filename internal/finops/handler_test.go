@@ -17,7 +17,7 @@ func newTestPolicyRegistry(t *testing.T) *PolicyRegistry {
 	}`)
 	reg, err := LoadPolicyRegistry(path)
 	if err != nil {
-		t.Fatalf("LoadPolicyRegistry a eșuat: %v", err)
+		t.Fatalf("LoadPolicyRegistry failed: %v", err)
 	}
 	return reg
 }
@@ -37,7 +37,7 @@ func TestUsageHandler_CombinesPoliciesAndLedger(t *testing.T) {
 	}
 	var entries []UsageEntry
 	if err := json.Unmarshal(rec.Body.Bytes(), &entries); err != nil {
-		t.Fatalf("răspuns JSON invalid: %v", err)
+		t.Fatalf("invalid JSON response: %v", err)
 	}
 
 	var found *UsageEntry
@@ -47,16 +47,16 @@ func TestUsageHandler_CombinesPoliciesAndLedger(t *testing.T) {
 		}
 	}
 	if found == nil {
-		t.Fatal("ar trebui să existe o intrare pentru agent-1")
+		t.Fatal("there should be an entry for agent-1")
 	}
 	if found.DailyBudgetUSD != 5.0 {
-		t.Errorf("daily_budget_usd = %v, vroiam 5.0", found.DailyBudgetUSD)
+		t.Errorf("daily_budget_usd = %v, want 5.0", found.DailyBudgetUSD)
 	}
 	if found.SpentUSDToday != 1.5 {
-		t.Errorf("spent_usd_today = %v, vroiam 1.5", found.SpentUSDToday)
+		t.Errorf("spent_usd_today = %v, want 1.5", found.SpentUSDToday)
 	}
 	if found.TaskTokens["task-1"] != 1500 {
-		t.Errorf("task_tokens[task-1] = %v, vroiam 1500", found.TaskTokens["task-1"])
+		t.Errorf("task_tokens[task-1] = %v, want 1500", found.TaskTokens["task-1"])
 	}
 }
 
@@ -66,7 +66,7 @@ func TestUsageHandler_RejectsNonGET(t *testing.T) {
 	rec := httptest.NewRecorder()
 	handler(rec, req)
 	if rec.Code != http.StatusMethodNotAllowed {
-		t.Errorf("status = %d, vroiam 405", rec.Code)
+		t.Errorf("status = %d, want 405", rec.Code)
 	}
 }
 
@@ -80,13 +80,13 @@ func TestPoliciesHandler_GetReturnsDefaultsAndAgents(t *testing.T) {
 
 	var resp policiesResponse
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("răspuns JSON invalid: %v", err)
+		t.Fatalf("invalid JSON response: %v", err)
 	}
 	if resp.Default.DailyBudgetUSD != 1.0 {
-		t.Errorf("default daily_budget_usd = %v, vroiam 1.0", resp.Default.DailyBudgetUSD)
+		t.Errorf("default daily_budget_usd = %v, want 1.0", resp.Default.DailyBudgetUSD)
 	}
 	if len(resp.Agents) != 1 || resp.Agents[0].AgentID != "agent-1" {
-		t.Errorf("agenți greșiți în răspuns: %+v", resp.Agents)
+		t.Errorf("wrong agents in response: %+v", resp.Agents)
 	}
 }
 
@@ -103,7 +103,7 @@ func TestPoliciesHandler_PostUpsertsPolicy(t *testing.T) {
 		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
 	}
 	if got := policies.For("agent-2"); got.DailyBudgetUSD != 10 {
-		t.Errorf("policy nu a fost salvată: %+v", got)
+		t.Errorf("policy wasn't saved: %+v", got)
 	}
 }
 
@@ -117,7 +117,7 @@ func TestPoliciesHandler_PostRejectsMissingAgentID(t *testing.T) {
 	handler(rec, req)
 
 	if rec.Code != http.StatusBadRequest {
-		t.Errorf("status = %d, vroiam 400", rec.Code)
+		t.Errorf("status = %d, want 400", rec.Code)
 	}
 }
 
@@ -134,6 +134,6 @@ func TestDashboardHandler_ServesHTML(t *testing.T) {
 		t.Errorf("Content-Type = %q", ct)
 	}
 	if !bytes.Contains(rec.Body.Bytes(), []byte("Nexus Trust Protocol")) {
-		t.Error("pagina HTML ar trebui să conțină titlul dashboard-ului")
+		t.Error("the HTML page should contain the dashboard's title")
 	}
 }

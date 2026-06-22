@@ -11,7 +11,7 @@ func generateTestKeypair(t *testing.T) (ed25519.PublicKey, ed25519.PrivateKey) {
 	t.Helper()
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
-		t.Fatalf("nu pot genera cheia de test: %v", err)
+		t.Fatalf("cannot generate test key: %v", err)
 	}
 	return pub, priv
 }
@@ -34,15 +34,15 @@ func TestSignAndVerify_RoundTrip(t *testing.T) {
 
 	token, err := Sign(priv, claims)
 	if err != nil {
-		t.Fatalf("Sign a eșuat: %v", err)
+		t.Fatalf("Sign failed: %v", err)
 	}
 
 	got, err := Verify(pub, token)
 	if err != nil {
-		t.Fatalf("Verify a eșuat pe un token valid: %v", err)
+		t.Fatalf("Verify failed on a valid token: %v", err)
 	}
 	if got.Subject != claims.Subject || got.AgentID != claims.AgentID {
-		t.Errorf("claims decodate diferă de original: %+v", got)
+		t.Errorf("decoded claims differ from the original: %+v", got)
 	}
 }
 
@@ -55,12 +55,12 @@ func TestVerify_RejectsTamperedSignature(t *testing.T) {
 	}
 	token, err := Sign(priv, claims)
 	if err != nil {
-		t.Fatalf("Sign a eșuat: %v", err)
+		t.Fatalf("Sign failed: %v", err)
 	}
 
 	tampered := token[:len(token)-2] + "xx"
 	if _, err := Verify(pub, tampered); err == nil {
-		t.Error("Verify ar trebui să respingă o semnătură falsificată")
+		t.Error("Verify should reject a forged signature")
 	}
 }
 
@@ -71,11 +71,11 @@ func TestVerify_RejectsWrongKey(t *testing.T) {
 	now := time.Now().UTC()
 	token, err := Sign(priv, Claims{Subject: "spiffe://nexus.trust/agent/x/task/y", ExpiresAt: now.Add(time.Minute).Unix()})
 	if err != nil {
-		t.Fatalf("Sign a eșuat: %v", err)
+		t.Fatalf("Sign failed: %v", err)
 	}
 
 	if _, err := Verify(otherPub, token); err == nil {
-		t.Error("Verify ar trebui să respingă un token semnat cu altă cheie")
+		t.Error("Verify should reject a token signed with a different key")
 	}
 }
 
@@ -85,14 +85,14 @@ func TestVerify_RejectsExpiredToken(t *testing.T) {
 	token, err := Sign(priv, Claims{
 		Subject:   "spiffe://nexus.trust/agent/x/task/y",
 		IssuedAt:  now.Add(-10 * time.Minute).Unix(),
-		ExpiresAt: now.Add(-5 * time.Minute).Unix(), // expirat în trecut
+		ExpiresAt: now.Add(-5 * time.Minute).Unix(), // expired in the past
 	})
 	if err != nil {
-		t.Fatalf("Sign a eșuat: %v", err)
+		t.Fatalf("Sign failed: %v", err)
 	}
 
 	if _, err := Verify(pub, token); err == nil {
-		t.Error("Verify ar trebui să respingă un token expirat")
+		t.Error("Verify should reject an expired token")
 	}
 }
 
@@ -101,21 +101,21 @@ func TestVerify_RejectsNotYetValidToken(t *testing.T) {
 	now := time.Now().UTC()
 	token, err := Sign(priv, Claims{
 		Subject:   "spiffe://nexus.trust/agent/x/task/y",
-		NotBefore: now.Add(10 * time.Minute).Unix(), // valabil abia în viitor
+		NotBefore: now.Add(10 * time.Minute).Unix(), // not valid until later
 		ExpiresAt: now.Add(20 * time.Minute).Unix(),
 	})
 	if err != nil {
-		t.Fatalf("Sign a eșuat: %v", err)
+		t.Fatalf("Sign failed: %v", err)
 	}
 
 	if _, err := Verify(pub, token); err == nil {
-		t.Error("Verify ar trebui să respingă un token cu nbf în viitor")
+		t.Error("Verify should reject a token with nbf in the future")
 	}
 }
 
 func TestVerify_RejectsMalformedToken(t *testing.T) {
 	pub, _ := generateTestKeypair(t)
-	if _, err := Verify(pub, "nu-este-un-jwt"); err == nil {
-		t.Error("Verify ar trebui să respingă un token malformat")
+	if _, err := Verify(pub, "not-a-jwt"); err == nil {
+		t.Error("Verify should reject a malformed token")
 	}
 }

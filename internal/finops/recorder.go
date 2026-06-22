@@ -1,8 +1,8 @@
-// recorder.go implementează proxy.SpendRecorder: citește consumul real
-// de tokeni dintr-un răspuns LLM deja primit de la upstream și îl
-// înregistrează în Ledger, înmulțit cu prețul per 1000 de tokeni
-// configurat pentru acel upstream. Această înregistrare este ce face ca
-// *următoarea* cerere a agentului să fie evaluată corect de Enforcer.
+// recorder.go implements proxy.SpendRecorder: it reads the real token
+// consumption from an LLM response already received from the upstream
+// and records it in the Ledger, multiplied by that upstream's
+// configured price per 1000 tokens. This is what makes the agent's
+// *next* request get evaluated correctly by Enforcer.
 package finops
 
 import (
@@ -12,23 +12,23 @@ import (
 	"nexus-gateway/internal/parser"
 )
 
-// Recorder implementează proxy.SpendRecorder pe baza unui Ledger.
+// Recorder implements proxy.SpendRecorder on top of a Ledger.
 type Recorder struct {
 	ledger *Ledger
 }
 
-// NewRecorder construiește un Recorder.
+// NewRecorder builds a Recorder.
 func NewRecorder(ledger *Ledger) *Recorder {
 	return &Recorder{ledger: ledger}
 }
 
-// RecordSpend implementează proxy.SpendRecorder. responseBody este corpul
-// JSON al răspunsului primit de la upstream (proxy-ul îl restaurează
-// intact pentru client — vezi internal/proxy — recorder-ul doar îl
-// inspectează). pricePerThousandTokensUSD vine din configurația
-// upstream-ului (config.Upstream.PricePerThousandTokensUSD); 0 înseamnă
-// "nu se calculează cost" pentru acel upstream (ex. un instrument intern
-// care nu este un model LLM taxat per token).
+// RecordSpend implements proxy.SpendRecorder. responseBody is the JSON
+// body of the response received from the upstream (the proxy restores
+// it intact for the client — see internal/proxy — the recorder only
+// inspects it). pricePerThousandTokensUSD comes from the upstream's
+// configuration (config.Upstream.PricePerThousandTokensUSD); 0 means
+// "don't calculate cost" for that upstream (e.g. an internal tool that
+// isn't a per-token-billed LLM model).
 func (r *Recorder) RecordSpend(_ context.Context, meta *parser.RequestMeta, upstreamName string, pricePerThousandTokensUSD float64, responseBody []byte) {
 	agentID := meta.VerifiedAgentID
 	if agentID == "" {

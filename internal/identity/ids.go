@@ -6,13 +6,13 @@ import (
 	"fmt"
 )
 
-// newJTI generează un identificator unic (JWT ID) pentru fiecare token
-// emis, util pentru trasabilitate în jurnalul de conformitate (fiecare
-// JTI poate fi corelat cu exact un token emis, o singură dată).
+// newJTI generates a unique identifier (JWT ID) for each issued token,
+// useful for traceability in the compliance ledger (each JTI can be
+// correlated with exactly one issued token, exactly once).
 func newJTI() (string, error) {
 	buf := make([]byte, 16)
 	if _, err := rand.Read(buf); err != nil {
-		return "", fmt.Errorf("identity: nu pot genera jti: %w", err)
+		return "", fmt.Errorf("identity: cannot generate jti: %w", err)
 	}
 	return hex.EncodeToString(buf), nil
 }

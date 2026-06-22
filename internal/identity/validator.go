@@ -1,8 +1,8 @@
-// validator.go implementează proxy.Validator: respinge automat orice
-// cerere care nu prezintă un JWT-SVID valid, semnat de autoritatea
-// Nexus, neexpirat și cu scope-ul cerut de ruta apelată. Înlocuiește
-// proxy.NoopValidator fără nicio schimbare în pachetul proxy — se
-// conectează prin interfața deja pregătită acolo.
+// validator.go implements proxy.Validator: it automatically rejects any
+// request that doesn't present a valid JWT-SVID, signed by the Nexus
+// authority, not expired, and with the scope the called route requires.
+// It replaces proxy.NoopValidator with no changes to the proxy package
+// — it plugs in through the interface already prepared there.
 package identity
 
 import (
@@ -16,18 +16,18 @@ import (
 	"nexus-gateway/internal/parser"
 )
 
-// SPIFFEValidator verifică identitatea criptografică a agentului care
-// face o cerere, pe baza tokenurilor JWT-SVID emise de Issuer.
+// SPIFFEValidator verifies the cryptographic identity of the agent
+// making a request, based on JWT-SVID tokens issued by Issuer.
 type SPIFFEValidator struct {
 	pub         ed25519.PublicKey
 	trustDomain string
 	suspension  SuspensionChecker
 }
 
-// NewSPIFFEValidator construiește un validator care acceptă doar tokenuri
-// semnate cu cheia publică dată și emise pentru domeniul de încredere dat.
-// suspension poate fi nil, caz în care se folosește NoopSuspensionChecker
-// (niciun agent nu este vreodată suspendat).
+// NewSPIFFEValidator builds a validator that only accepts tokens signed
+// with the given public key and issued for the given trust domain.
+// suspension may be nil, in which case NoopSuspensionChecker is used
+// (no agent is ever suspended).
 func NewSPIFFEValidator(pub ed25519.PublicKey, trustDomain string, suspension SuspensionChecker) *SPIFFEValidator {
 	if suspension == nil {
 		suspension = NoopSuspensionChecker{}
@@ -35,14 +35,14 @@ func NewSPIFFEValidator(pub ed25519.PublicKey, trustDomain string, suspension Su
 	return &SPIFFEValidator{pub: pub, trustDomain: trustDomain, suspension: suspension}
 }
 
-// Validate implementează proxy.Validator. Cere un antet
-// "Authorization: Bearer <jwt-svid>", verifică semnătura și expirarea
-// tokenului, verifică domeniul de încredere și, dacă ruta cere un scope
-// anume (meta.RequiredScope, populat de proxy din configurația
-// upstream-ului), verifică că tokenul îl conține. La succes, scrie
-// identitatea verificată înapoi în meta — astfel logging-ul, FinOps și
-// conformitatea văd identitatea reală, nu un antet declarat de client
-// și potențial falsificat.
+// Validate implements proxy.Validator. It requires an
+// "Authorization: Bearer <jwt-svid>" header, verifies the token's
+// signature and expiration, checks the trust domain, and, if the route
+// requires a specific scope (meta.RequiredScope, populated by the proxy
+// from the upstream's configuration), verifies the token contains it.
+// On success, it writes the verified identity back into meta — so
+// logging, FinOps, and compliance all see the real identity, not a
+// client-declared header that could be forged.
 func (v *SPIFFEValidator) Validate(_ context.Context, meta *parser.RequestMeta, r *http.Request) error {
 	token, err := bearerToken(r)
 	if err != nil {
@@ -54,26 +54,27 @@ func (v *SPIFFEValidator) Validate(_ context.Context, meta *parser.RequestMeta, 
 		return err
 	}
 
-	// Un agent suspendat de un operator (kill-switch) este respins
-	// instantaneu, indiferent cât de valid este criptografic tokenul lui —
-	// suspendarea revocă efectiv accesul, nu doar emiterea de tokenuri noi.
+	// An agent suspended by an operator (kill switch) is rejected
+	// instantly, no matter how cryptographically valid its token is —
+	// suspension effectively revokes access, not just the issuing of new
+	// tokens.
 	if suspended, reason := v.suspension.IsSuspended(claims.AgentID); suspended {
-		return fmt.Errorf("identity: agentul %q este suspendat de un operator (%s) — acces revocat", claims.AgentID, reason)
+		return fmt.Errorf("identity: agent %q is suspended by an operator (%s) — access revoked", claims.AgentID, reason)
 	}
 
 	expectedPrefix := fmt.Sprintf("spiffe://%s/agent/", v.trustDomain)
 	if !strings.HasPrefix(claims.Subject, expectedPrefix) {
-		return fmt.Errorf("identity: token emis pentru un domeniu de încredere necunoscut: %s", claims.Subject)
+		return fmt.Errorf("identity: token issued for an unknown trust domain: %s", claims.Subject)
 	}
 
 	if meta.RequiredScope != "" && !containsScope(claims.Scopes, meta.RequiredScope) {
 		return fmt.Errorf(
-			"identity: scope insuficient pentru această rută — necesar %q, token are %v",
+			"identity: insufficient scope for this route — required %q, token has %v",
 			meta.RequiredScope, claims.Scopes,
 		)
 	}
 
-	// Identitate verificată cu succes: o scriem în meta pentru audit/logging.
+	// Identity successfully verified: write it into meta for audit/logging.
 	meta.SPIFFEID = claims.Subject
 	meta.VerifiedAgentID = claims.AgentID
 	meta.VerifiedTaskID = claims.TaskID
@@ -85,15 +86,15 @@ func (v *SPIFFEValidator) Validate(_ context.Context, meta *parser.RequestMeta, 
 func bearerToken(r *http.Request) (string, error) {
 	h := r.Header.Get("Authorization")
 	if h == "" {
-		return "", errors.New("identity: antet Authorization absent — niciun JWT-SVID prezentat")
+		return "", errors.New("identity: Authorization header missing — no JWT-SVID presented")
 	}
 	const prefix = "Bearer "
 	if !strings.HasPrefix(h, prefix) {
-		return "", errors.New(`identity: format Authorization invalid, se așteaptă "Bearer <jwt-svid>"`)
+		return "", errors.New(`identity: invalid Authorization format, expected "Bearer <jwt-svid>"`)
 	}
 	token := strings.TrimSpace(strings.TrimPrefix(h, prefix))
 	if token == "" {
-		return "", errors.New("identity: token absent în antetul Authorization")
+		return "", errors.New("identity: token missing from the Authorization header")
 	}
 	return token, nil
 }

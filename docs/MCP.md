@@ -1,16 +1,16 @@
-# Compatibilitate nativă cu Model Context Protocol (MCP)
+# Native Model Context Protocol (MCP) compatibility
 
-Nexus Trust Protocol recunoaște nativ mesajele [MCP](https://modelcontextprotocol.io) (Model Context Protocol), peste detecția JSON-RPC generică. Scopul: gateway-ul nu doar rutează trafic JSON-RPC, ci înțelege exact ce **instrument (tool)** apelă un agent — informație pe care identitatea, FinOps și registrul de conformitate o pot folosi cu granularitate fină.
+Nexus Trust Protocol natively recognizes [MCP](https://modelcontextprotocol.io) (Model Context Protocol) messages, on top of generic JSON-RPC detection. The goal: the gateway doesn't just route JSON-RPC traffic, it understands exactly which **tool** an agent is calling — information that identity, FinOps, and the compliance ledger can then use with fine granularity.
 
-## Ce face concret
+## What it actually does
 
-Pachetul `internal/mcp` recunoaște metodele standard MCP (`initialize`, `tools/list`, `tools/call`, `resources/list`, `resources/read`, `prompts/list`, `prompts/get`, `ping`, plus orice `notifications/*`). `internal/parser` folosește această recunoaștere: pentru orice mesaj JSON-RPC a cărui metodă este una MCP, `RequestMeta.Protocol` devine `"MCP"` (în loc de generic `"JSON-RPC"`), iar pentru `tools/call`, `RequestMeta.MCPTool` este populat cu numele exact al instrumentului (`params.name`).
+The `internal/mcp` package recognizes the standard MCP methods (`initialize`, `tools/list`, `tools/call`, `resources/list`, `resources/read`, `prompts/list`, `prompts/get`, `ping`, plus any `notifications/*`). `internal/parser` uses this recognition: for any JSON-RPC message whose method is an MCP one, `RequestMeta.Protocol` becomes `"MCP"` (instead of the generic `"JSON-RPC"`), and for `tools/call`, `RequestMeta.MCPTool` is populated with the tool's exact name (`params.name`).
 
-Acest `MCPTool` este disponibil în tot restul fluxului: logging (`mcp_tool` în log-urile JSON de pe stdout), registrul de conformitate (`tool` în lanțul WORM — numele exact al instrumentului, nu doar "tools/call" generic) și, cel mai important, în **rutare/autorizare**.
+This `MCPTool` is available throughout the rest of the flow: logging (`mcp_tool` in the JSON logs on stdout), the compliance ledger (`tool` in the WORM chain — the tool's exact name, not just the generic "tools/call"), and, most importantly, in **routing/authorization**.
 
-## Scope-uri per-tool
+## Per-tool scopes
 
-Un `required_scope` poate fi definit la nivelul întregului upstream — toate apelurile către `/v1/internal/...` ar cere, de exemplu, `tools:internal:invoke`, indiferent ce instrument anume e apelat prin MCP în spate. Pentru control mai fin, `config.Upstream` are un câmp opțional `tool_scopes`, o hartă `nume_tool -> scope`:
+A `required_scope` can be defined at the level of the whole upstream — every call to `/v1/internal/...` would require, say, `tools:internal:invoke`, regardless of which specific tool is called through MCP behind it. For finer control, `config.Upstream` has an optional `tool_scopes` field, a `tool_name -> scope` map:
 
 ```json
 {
@@ -26,15 +26,15 @@ Un `required_scope` poate fi definit la nivelul întregului upstream — toate a
 }
 ```
 
-Dacă o cerere MCP `tools/call` apelează un instrument prezent în `tool_scopes`, scope-ul lui specific **suprascrie** `required_scope` generic pentru exact acea cerere — restul rutei (rutare, FinOps, conformitate) este neschimbat. Un instrument apelat care NU este în hartă continuă să folosească `required_scope` generic al upstream-ului (fallback sigur — nimic nu devine implicit "mai permisiv").
+If an MCP `tools/call` request calls a tool present in `tool_scopes`, that tool's specific scope **overrides** the generic `required_scope` for that exact request — the rest of the route (routing, FinOps, compliance) is unchanged. A called tool that is NOT in the map keeps using the upstream's generic `required_scope` (a safe fallback — nothing implicitly becomes "more permissive").
 
-Acesta este exemplul exact din propunerea inițială a Nexus Trust Protocol: *"agentul are permisiunea de a citi contul de e-mail, dar nu de a șterge"* — implementat acum ca politică de configurare, nu ca logică hardcodată.
+This is the exact example from Nexus Trust Protocol's original proposal: *"the agent has permission to read the email account, but not to delete"* — now implemented as a configuration policy, not hardcoded logic.
 
-### De ce este important
+### Why it matters
 
-Un agent cu un JWT-SVID care conține doar scope-ul `tools:email:read` poate apela `read_email` prin MCP, dar primește `401` de la `SPIFFEValidator` dacă încearcă `delete_email` — chiar dacă ambele instrumente trec prin același upstream MCP. Granularitatea controlului de acces urmează granularitatea reală a instrumentelor pe care agentul le poate folosi, nu doar granularitatea rutelor HTTP.
+An agent with a JWT-SVID containing only the `tools:email:read` scope can call `read_email` through MCP, but gets `401` from `SPIFFEValidator` if it tries `delete_email` — even though both tools go through the same MCP upstream. The granularity of access control follows the real granularity of the tools an agent can use, not just the granularity of HTTP routes.
 
-## Exemplu de cerere recunoscută ca MCP
+## Example of a request recognized as MCP
 
 ```bash
 curl -X POST http://localhost:8080/v1/internal/mcp \
@@ -43,9 +43,9 @@ curl -X POST http://localhost:8080/v1/internal/mcp \
   -d '{"jsonrpc":"2.0","id":"1","method":"tools/call","params":{"name":"read_email","arguments":{}}}'
 ```
 
-Logul gateway-ului va arăta `protocol=MCP`, `jsonrpc_method=tools/call`, `mcp_tool=read_email`, `required_scope=tools:email:read` (preluat din `tool_scopes`, nu din `required_scope` generic).
+The gateway's log will show `protocol=MCP`, `jsonrpc_method=tools/call`, `mcp_tool=read_email`, `required_scope=tools:email:read` (taken from `tool_scopes`, not from the generic `required_scope`).
 
-## Limitări cunoscute
+## Known limitations
 
-- Nu este implementat un server/client MCP complet (handshake `initialize`, capabilități negociate, transport SSE/stdio) — Nexus este un proxy HTTP care **recunoaște forma mesajelor**, nu un endpoint MCP propriu-zis. Pentru cazul comun (agent → Nexus → server MCP real prin HTTP), acest nivel de recunoaștere este suficient pentru rutare/autorizare/audit.
-- Cereri JSON-RPC batch (array de mesaje într-un singur body) nu sunt despachetate individual — fiecare cerere HTTP este tratată ca un singur mesaj.
+- A full MCP server/client isn't implemented (the `initialize` handshake, negotiated capabilities, SSE/stdio transport) — Nexus is an HTTP proxy that **recognizes the shape of messages**, not an MCP endpoint itself. For the common case (agent → Nexus → a real MCP server over HTTP), this level of recognition is enough for routing/authorization/audit.
+- JSON-RPC batch requests (an array of messages in a single body) aren't unpacked individually — each HTTP request is treated as a single message.

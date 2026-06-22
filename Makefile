@@ -9,12 +9,12 @@ agentctl:
 run: build
 	./bin/nexus-gateway -config configs/config.json
 
-# test rulează doar testele modulului gateway (server).
+# test runs only the gateway (server) module's tests.
 test:
 	go test ./... -v
 
-# test-all rulează și testele SDK-ului client (modul Go separat în sdk/),
-# folosind go.work pentru a le rezolva pe ambele dintr-un singur loc.
+# test-all also runs the client SDK's tests (a separate Go module in
+# sdk/), using go.work to resolve both from a single place.
 test-all:
 	go test ./... ./sdk/... -v
 

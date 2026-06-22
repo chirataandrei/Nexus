@@ -1,12 +1,12 @@
-// ledger.go ține, în memorie, consumul real al fiecărui agent: cât a
-// cheltuit azi (resetat la schimbarea zilei UTC) și câți tokeni a folosit
-// în fiecare sarcină (task_id) — dimensiunea pe care un agent prins într-o
-// buclă de halucinație recurentă o poate exploda rapid.
+// ledger.go tracks, in memory, each agent's real consumption: how much
+// it has spent today (reset on UTC day rollover) and how many tokens it
+// has used in each task (task_id) — the dimension an agent caught in a
+// recurring hallucination loop can blow up quickly.
 //
-// Notă de scalare: Ledger este în memoria unui singur proces. Pentru mai
-// multe instanțe Nexus în paralel ar fi nevoie de un store partajat
-// (ex. Redis), dar arhitectura (interfețele Authorize/RecordSpend)
-// rămâne aceeași.
+// Scaling note: Ledger lives in a single process's memory. Multiple
+// Nexus instances running in parallel would need a shared store (e.g.
+// Redis), but the architecture (the Authorize/RecordSpend interfaces)
+// stays the same.
 package finops
 
 import (
@@ -15,26 +15,26 @@ import (
 	"time"
 )
 
-// taskUsage urmărește tokenii consumați de o singură sarcină (task_id).
+// taskUsage tracks the tokens consumed by a single task (task_id).
 type taskUsage struct {
 	tokens int
 }
 
-// agentState este starea zilnică a unui agent.
+// agentState is an agent's daily state.
 type agentState struct {
-	day      string // "2006-01-02" în UTC
+	day      string // "2006-01-02" in UTC
 	spentUSD float64
 	tasks    map[string]*taskUsage
 }
 
-// Ledger este registrul de consum, sigur pentru acces concurent.
+// Ledger is the consumption ledger, safe for concurrent access.
 type Ledger struct {
 	mu     sync.Mutex
 	agents map[string]*agentState
-	now    func() time.Time // injectabil în teste
+	now    func() time.Time // injectable in tests
 }
 
-// NewLedger construiește un Ledger gol.
+// NewLedger builds an empty Ledger.
 func NewLedger() *Ledger {
 	return &Ledger{
 		agents: make(map[string]*agentState),
@@ -42,8 +42,9 @@ func NewLedger() *Ledger {
 	}
 }
 
-// ensureFreshLocked returnează starea curentă a agentului, resetând-o
-// automat dacă a trecut ziua UTC. Apelantul trebuie să țină l.mu blocat.
+// ensureFreshLocked returns the agent's current state, automatically
+// resetting it if the UTC day has rolled over. The caller must hold
+// l.mu.
 func (l *Ledger) ensureFreshLocked(agentID string) *agentState {
 	today := l.now().UTC().Format("2006-01-02")
 	st, ok := l.agents[agentID]
@@ -54,9 +55,9 @@ func (l *Ledger) ensureFreshLocked(agentID string) *agentState {
 	return st
 }
 
-// Authorize este verificarea "hard" de pre-cerere: respinge imediat,
-// înainte de a contacta vreun LLM, dacă agentul a epuizat deja bugetul
-// zilnic alocat sau limita de tokeni pentru sarcina curentă.
+// Authorize is the "hard" pre-request check: it rejects immediately,
+// before contacting any LLM, if the agent has already exhausted its
+// daily budget or the token limit for the current task.
 func (l *Ledger) Authorize(agentID, taskID string, policy AgentPolicy) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -65,7 +66,7 @@ func (l *Ledger) Authorize(agentID, taskID string, policy AgentPolicy) error {
 
 	if policy.DailyBudgetUSD > 0 && st.spentUSD >= policy.DailyBudgetUSD {
 		return fmt.Errorf(
-			"finops: buget zilnic epuizat pentru agentul %q ($%.4f din $%.2f folosiți azi)",
+			"finops: daily budget exhausted for agent %q ($%.4f of $%.2f spent today)",
 			agentID, st.spentUSD, policy.DailyBudgetUSD,
 		)
 	}
@@ -73,7 +74,7 @@ func (l *Ledger) Authorize(agentID, taskID string, policy AgentPolicy) error {
 	if policy.MaxTokensPerTask > 0 {
 		if tu, ok := st.tasks[taskID]; ok && tu.tokens >= policy.MaxTokensPerTask {
 			return fmt.Errorf(
-				"finops: limita de tokeni pentru această sarcină a fost atinsă (agent %q, task %q: %d din %d tokeni) — posibilă buclă de halucinație recurentă",
+				"finops: token limit reached for this task (agent %q, task %q: %d of %d tokens) — possible recurring hallucination loop",
 				agentID, taskID, tu.tokens, policy.MaxTokensPerTask,
 			)
 		}
@@ -82,10 +83,10 @@ func (l *Ledger) Authorize(agentID, taskID string, policy AgentPolicy) error {
 	return nil
 }
 
-// RecordSpend acumulează costul și tokenii unui apel finalizat. Este
-// apelat după ce s-a primit răspunsul de la LLM (abia atunci se cunoaște
-// consumul real), pentru ca *următoarea* cerere a agentului să fie
-// evaluată corect de Authorize.
+// RecordSpend accumulates the cost and tokens of a completed call. It's
+// called after the LLM's response has been received (only then is the
+// real consumption known), so the agent's *next* request is evaluated
+// correctly by Authorize.
 func (l *Ledger) RecordSpend(agentID, taskID string, tokens int, costUSD float64) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -101,8 +102,8 @@ func (l *Ledger) RecordSpend(agentID, taskID string, tokens int, costUSD float64
 	tu.tokens += tokens
 }
 
-// AgentUsageSnapshot este o copie imuabilă a stării unui agent, folosită
-// de dashboard/API pentru a expune consumul curent.
+// AgentUsageSnapshot is an immutable copy of an agent's state, used by
+// the dashboard/API to expose current consumption.
 type AgentUsageSnapshot struct {
 	AgentID    string         `json:"agent_id"`
 	Date       string         `json:"date"`
@@ -110,9 +111,9 @@ type AgentUsageSnapshot struct {
 	TaskTokens map[string]int `json:"task_tokens"`
 }
 
-// Snapshot returnează o copie a stării curente a tuturor agenților
-// cunoscuți de ledger (care au avut cel puțin o cerere autorizată sau
-// înregistrată astăzi).
+// Snapshot returns a copy of the current state of every agent known to
+// the ledger (that has had at least one authorized or recorded request
+// today).
 func (l *Ledger) Snapshot() []AgentUsageSnapshot {
 	l.mu.Lock()
 	defer l.mu.Unlock()

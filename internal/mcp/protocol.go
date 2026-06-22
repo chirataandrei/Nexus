@@ -1,18 +1,18 @@
-// Package mcp conține cunoștințele minime despre Model Context Protocol
-// de care Nexus are nevoie pentru a fi "nativ compatibil": nu implementăm
-// un server/client MCP complet, ci doar recunoaștem formele standard de
-// mesaje JSON-RPC ale MCP, suficient cât gateway-ul să poată extrage
-// exact numele instrumentului (tool) apelat de un agent — informație pe
-// care identitatea (scope per-tool), FinOps și registrul de conformitate
-// o pot folosi în continuare cu granularitate fină.
+// Package mcp contains the minimal knowledge of the Model Context
+// Protocol that Nexus needs to be "natively compatible": we don't
+// implement a full MCP server/client, we just recognize the standard
+// MCP JSON-RPC message shapes, enough for the gateway to extract the
+// exact tool name an agent is calling — information that identity
+// (per-tool scopes), FinOps, and the compliance ledger can then use
+// with fine granularity.
 package mcp
 
 import "encoding/json"
 
-// Metodele JSON-RPC standard din specificația MCP. Lista nu este
-// exhaustivă (MCP mai are notificări, resurse, completări etc.) — este
-// suficientă pentru a distinge un mesaj MCP de un JSON-RPC generic și
-// pentru a identifica apelurile de instrumente.
+// The standard JSON-RPC methods from the MCP specification. The list
+// isn't exhaustive (MCP also has notifications, resources, completions,
+// etc.) — it's enough to distinguish an MCP message from generic
+// JSON-RPC and to identify tool calls.
 const (
 	MethodInitialize    = "initialize"
 	MethodToolsList     = "tools/list"
@@ -24,9 +24,9 @@ const (
 	MethodPing          = "ping"
 )
 
-// knownMethods este folosit pentru a decide dacă un JSON-RPC generic
-// arată suficient ca un mesaj MCP. Orice metodă cu prefix "notifications/"
-// este de asemenea considerată MCP (ex. "notifications/initialized").
+// knownMethods is used to decide whether a generic JSON-RPC call looks
+// enough like an MCP message. Any method with the "notifications/"
+// prefix is also considered MCP (e.g. "notifications/initialized").
 var knownMethods = map[string]bool{
 	MethodInitialize:    true,
 	MethodToolsList:     true,
@@ -38,8 +38,8 @@ var knownMethods = map[string]bool{
 	MethodPing:          true,
 }
 
-// IsMCPMethod decide dacă o metodă JSON-RPC face parte din vocabularul
-// standard MCP.
+// IsMCPMethod decides whether a JSON-RPC method is part of the standard
+// MCP vocabulary.
 func IsMCPMethod(method string) bool {
 	if knownMethods[method] {
 		return true
@@ -47,15 +47,15 @@ func IsMCPMethod(method string) bool {
 	return len(method) > len("notifications/") && method[:len("notifications/")] == "notifications/"
 }
 
-// toolCallParams este forma minimă a câmpului "params" pentru un mesaj
-// MCP "tools/call".
+// toolCallParams is the minimal shape of the "params" field for an MCP
+// "tools/call" message.
 type toolCallParams struct {
 	Name string `json:"name"`
 }
 
-// ExtractToolName citește numele instrumentului dintr-un mesaj MCP
-// "tools/call". Returnează ok=false pentru orice altă metodă sau dacă
-// params nu se poate decoda în forma așteptată.
+// ExtractToolName reads the tool name from an MCP "tools/call" message.
+// Returns ok=false for any other method, or if params can't be decoded
+// into the expected shape.
 func ExtractToolName(method string, params json.RawMessage) (string, bool) {
 	if method != MethodToolsCall || len(params) == 0 {
 		return "", false

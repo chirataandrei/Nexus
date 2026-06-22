@@ -1,8 +1,9 @@
-// enforcer.go conține implementarea reală a proxy.BudgetEnforcer:
-// verifică, ÎNAINTE ca cererea să ajungă la modelul LLM, dacă agentul a
-// epuizat deja bugetul zilnic sau limita de tokeni alocată sarcinii
-// curente. Înlocuiește proxy.NoopBudgetEnforcer prin aceeași interfață
-// deja pregătită în pachetul proxy — fără alte modificări acolo.
+// enforcer.go contains the real implementation of proxy.BudgetEnforcer:
+// it checks, BEFORE the request reaches the LLM model, whether the
+// agent has already exhausted its daily budget or the token limit
+// allocated to the current task. It replaces proxy.NoopBudgetEnforcer
+// through the same interface already prepared in the proxy package —
+// no other changes needed there.
 package finops
 
 import (
@@ -11,27 +12,26 @@ import (
 	"nexus-gateway/internal/parser"
 )
 
-// Enforcer implementează proxy.BudgetEnforcer pe baza unui Ledger și a
-// unui PolicyRegistry.
+// Enforcer implements proxy.BudgetEnforcer on top of a Ledger and a
+// PolicyRegistry.
 type Enforcer struct {
 	policies *PolicyRegistry
 	ledger   *Ledger
 }
 
-// NewEnforcer construiește un Enforcer.
+// NewEnforcer builds an Enforcer.
 func NewEnforcer(policies *PolicyRegistry, ledger *Ledger) *Enforcer {
 	return &Enforcer{policies: policies, ledger: ledger}
 }
 
-// Authorize implementează proxy.BudgetEnforcer. Folosește identitatea
-// VERIFICATĂ (meta.VerifiedAgentID, populată de identity.SPIFFEValidator)
-// — niciodată antetul declarat și nesigur — pentru a decide dacă cererea
-// poate continua spre upstream.
+// Authorize implements proxy.BudgetEnforcer. It uses the VERIFIED
+// identity (meta.VerifiedAgentID, populated by identity.SPIFFEValidator)
+// — never the unsafe, client-declared header — to decide whether the
+// request can proceed to the upstream.
 //
-// Dacă nicio identitate verificată nu este prezentă (de exemplu un
-// mediu de testare care folosește proxy.NoopValidator), Enforcer nu
-// aplică nicio restricție: politica de buget este legată explicit de
-// agenți cunoscuți, nu de cereri anonime.
+// If no verified identity is present (e.g. a test environment using
+// proxy.NoopValidator), Enforcer applies no restriction: budget policy
+// is explicitly tied to known agents, not to anonymous requests.
 func (e *Enforcer) Authorize(_ context.Context, meta *parser.RequestMeta) error {
 	agentID := meta.VerifiedAgentID
 	if agentID == "" {

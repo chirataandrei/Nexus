@@ -6,32 +6,32 @@ func TestSuspensionRegistry_SuspendAndCheck(t *testing.T) {
 	r := NewSuspensionRegistry()
 
 	if suspended, _ := r.IsSuspended("agent-1"); suspended {
-		t.Fatal("agent-1 nu ar trebui suspendat inițial")
+		t.Fatal("agent-1 should not be suspended initially")
 	}
 
-	r.Suspend("agent-1", "comportament anormal", "operator@nexus")
+	r.Suspend("agent-1", "abnormal behavior", "operator@nexus")
 
 	suspended, reason := r.IsSuspended("agent-1")
 	if !suspended {
-		t.Fatal("agent-1 ar trebui suspendat după Suspend")
+		t.Fatal("agent-1 should be suspended after Suspend")
 	}
-	if reason != "comportament anormal" {
+	if reason != "abnormal behavior" {
 		t.Errorf("reason = %q", reason)
 	}
 }
 
 func TestSuspensionRegistry_Resume(t *testing.T) {
 	r := NewSuspensionRegistry()
-	r.Suspend("agent-1", "motiv", "op")
+	r.Suspend("agent-1", "reason", "op")
 
 	if ok := r.Resume("agent-1"); !ok {
-		t.Error("Resume ar trebui să returneze true pentru un agent suspendat")
+		t.Error("Resume should return true for a suspended agent")
 	}
 	if suspended, _ := r.IsSuspended("agent-1"); suspended {
-		t.Error("agent-1 nu ar trebui să mai fie suspendat după Resume")
+		t.Error("agent-1 should no longer be suspended after Resume")
 	}
-	if ok := r.Resume("agent-necunoscut"); ok {
-		t.Error("Resume pe un agent nesuspendat ar trebui să returneze false")
+	if ok := r.Resume("unknown-agent"); ok {
+		t.Error("Resume on a non-suspended agent should return false")
 	}
 }
 
@@ -42,6 +42,6 @@ func TestSuspensionRegistry_List(t *testing.T) {
 
 	list := r.List()
 	if len(list) != 2 {
-		t.Fatalf("len(list) = %d, vroiam 2", len(list))
+		t.Fatalf("len(list) = %d, want 2", len(list))
 	}
 }

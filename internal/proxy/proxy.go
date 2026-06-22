@@ -1,16 +1,16 @@
-// Package proxy implementează nucleul gateway-ului: un reverse proxy
-// Layer 7 care interceptează cererile HTTP/REST și JSON-RPC ale
-// agenților, le validează, le rutează către upstream-ul corect (model
-// LLM extern sau serviciu intern) și le jurnalizează structurat.
+// Package proxy implements the core of the gateway: a Layer 7 reverse
+// proxy that intercepts agents' HTTP/REST and JSON-RPC requests,
+// validates them, routes them to the right upstream (external LLM
+// model or internal service), and logs them in a structured way.
 //
-// Lanțul de procesare per cerere este:
+// The per-request processing chain is:
 //
-//	parsare payload -> rutare -> validare identitate -> autorizare buget
-//	-> jurnalizare cerere -> proxy efectiv -> jurnalizare răspuns
+//	parse payload -> route -> validate identity -> authorize budget
+//	-> log request -> proxy the call -> log response
 //
-// Validarea identității (WIMSE/SPIFFE) și autorizarea bugetului (FinOps)
-// sunt expuse ca interfețe (Validator, BudgetEnforcer din hooks.go) ca
-// implementările reale să se conecteze fără să rescrie acest fișier.
+// Identity validation (WIMSE/SPIFFE) and budget authorization (FinOps)
+// are exposed as interfaces (Validator, BudgetEnforcer in hooks.go) so
+// real implementations can plug in without rewriting this file.
 package proxy
 
 import (
@@ -29,8 +29,8 @@ import (
 	"nexus-gateway/internal/parser"
 )
 
-// route leagă un prefix de path de un upstream configurat și de
-// reverse-proxy-ul stdlib care efectuează transmiterea efectivă.
+// route ties a path prefix to a configured upstream and to the stdlib
+// reverse proxy that performs the actual forwarding.
 type route struct {
 	prefix          string
 	stripPrefix     bool
@@ -41,8 +41,8 @@ type route struct {
 	proxy           *httputil.ReverseProxy
 }
 
-// Server este gateway-ul Nexus complet asamblat: rutele de upstream,
-// hook-urile de validare/buget/cost și sink-ul de audit.
+// Server is the fully assembled Nexus gateway: upstream routes, the
+// validation/budget/cost hooks, and the audit sink.
 type Server struct {
 	cfg       *config.Config
 	validator Validator
@@ -52,13 +52,13 @@ type Server struct {
 	handler   http.Handler
 }
 
-// NewServer construiește gateway-ul pe baza configurației. validator,
-// budget, spend și audit pot fi nil, caz în care se folosesc
-// implementările implicite (NoopValidator, NoopBudgetEnforcer,
+// NewServer builds the gateway from the given configuration. validator,
+// budget, spend, and audit may be nil, in which case the default
+// implementations are used (NoopValidator, NoopBudgetEnforcer,
 // NoopSpendRecorder, StdoutLogger).
 func NewServer(cfg *config.Config, validator Validator, budget BudgetEnforcer, spend SpendRecorder, audit logging.AuditSink) (*Server, error) {
 	if cfg == nil {
-		return nil, fmt.Errorf("proxy: config nu poate fi nil")
+		return nil, fmt.Errorf("proxy: config must not be nil")
 	}
 	if validator == nil {
 		validator = NoopValidator{}
@@ -77,7 +77,7 @@ func NewServer(cfg *config.Config, validator Validator, budget BudgetEnforcer, s
 	for _, u := range cfg.Upstreams {
 		target, err := url.Parse(u.TargetURL)
 		if err != nil {
-			return nil, fmt.Errorf("proxy: target_url invalid pentru upstream %q: %w", u.Name, err)
+			return nil, fmt.Errorf("proxy: invalid target_url for upstream %q: %w", u.Name, err)
 		}
 		rp := httputil.NewSingleHostReverseProxy(target)
 		rp.ErrorHandler = upstreamErrorHandler(u.Name)
@@ -93,9 +93,9 @@ func NewServer(cfg *config.Config, validator Validator, budget BudgetEnforcer, s
 			proxy:           rp,
 		})
 	}
-	// Prefixele mai lungi (mai specifice) trebuie verificate primele,
-	// altfel un upstream generic pe "/v1" ar "ascunde" un upstream mai
-	// specific precum "/v1/openai".
+	// Longer (more specific) prefixes must be checked first, otherwise a
+	// generic upstream on "/v1" would "shadow" a more specific one like
+	// "/v1/openai".
 	sort.Slice(routes, func(i, j int) bool {
 		return len(routes[i].prefix) > len(routes[j].prefix)
 	})
@@ -105,8 +105,8 @@ func NewServer(cfg *config.Config, validator Validator, budget BudgetEnforcer, s
 	return s, nil
 }
 
-// Handler returnează http.Handler-ul complet al gateway-ului, pregătit
-// de a fi montat într-un http.Server.
+// Handler returns the gateway's complete http.Handler, ready to be
+// mounted on an http.Server.
 func (s *Server) Handler() http.Handler {
 	return s.handler
 }
@@ -121,27 +121,27 @@ func (s *Server) buildHandler(routes []route) http.Handler {
 
 		meta, _, err := parser.Parse(r)
 		if err != nil {
-			http.Error(w, "corp de cerere invalid sau prea mare", http.StatusBadRequest)
+			http.Error(w, "invalid or oversized request body", http.StatusBadRequest)
 			return
 		}
 
 		rt := matchRoute(routes, r.URL.Path)
 		if rt == nil {
 			s.audit.RecordRejection(meta, "no_matching_upstream")
-			http.Error(w, "niciun upstream configurat pentru acest path", http.StatusNotFound)
+			http.Error(w, "no upstream configured for this path", http.StatusNotFound)
 			return
 		}
 
-		// Punem la dispoziția hook-urilor (Validator, BudgetEnforcer)
-		// numele upstream-ului și scope-ul cerut de rută, fără a extinde
-		// interfețele lor cu parametri suplimentari.
+		// Make the upstream name and the route's required scope available
+		// to the hooks (Validator, BudgetEnforcer) without extending their
+		// interfaces with extra parameters.
 		meta.UpstreamName = rt.name
 		meta.RequiredScope = rt.requiredScope
 
-		// Dacă cererea este un apel de instrument MCP recunoscut explicit
-		// în tool_scopes, scope-ul specific acelui instrument suprascrie
-		// scope-ul generic al upstream-ului — control de acces la
-		// granularitatea unui singur tool, nu a întregii rute.
+		// If the request is an MCP tool call explicitly recognized in
+		// tool_scopes, that specific tool's scope overrides the upstream's
+		// generic scope — access control at the granularity of a single
+		// tool, not the whole route.
 		if meta.MCPTool != "" && rt.toolScopes != nil {
 			if scope, ok := rt.toolScopes[meta.MCPTool]; ok {
 				meta.RequiredScope = scope
@@ -150,17 +150,17 @@ func (s *Server) buildHandler(routes []route) http.Handler {
 
 		ctx := r.Context()
 
-		// Validare identitate (WIMSE/SPIFFE).
+		// Identity validation (WIMSE/SPIFFE).
 		if err := s.validator.Validate(ctx, meta, r); err != nil {
 			s.audit.RecordRejection(meta, "identity_validation_failed: "+err.Error())
-			http.Error(w, "identitate invalidă sau expirată", http.StatusUnauthorized)
+			http.Error(w, "invalid or expired identity", http.StatusUnauthorized)
 			return
 		}
 
-		// Enforcement FinOps în timp real.
+		// Real-time FinOps enforcement.
 		if err := s.budget.Authorize(ctx, meta); err != nil {
 			s.audit.RecordRejection(meta, "budget_exceeded: "+err.Error())
-			http.Error(w, "limită de buget atinsă pentru acest agent", http.StatusTooManyRequests)
+			http.Error(w, "budget limit reached for this agent", http.StatusTooManyRequests)
 			return
 		}
 
@@ -168,9 +168,9 @@ func (s *Server) buildHandler(routes []route) http.Handler {
 
 		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 
-		// meta este atașat contextului cererii interne ca să poată fi
-		// recuperat din ModifyResponse (SpendRecorder), care primește doar
-		// *http.Response, nu și variabilele locale de aici.
+		// meta is attached to the internal request's context so it can be
+		// retrieved from ModifyResponse (SpendRecorder), which only
+		// receives *http.Response, not the local variables defined here.
 		req := r.Clone(withRequestMeta(ctx, meta))
 		if rt.stripPrefix {
 			req.URL.Path = strings.TrimPrefix(r.URL.Path, rt.prefix)
@@ -185,8 +185,8 @@ func (s *Server) buildHandler(routes []route) http.Handler {
 	})
 }
 
-// matchRoute găsește prima rută (deja sortată descrescător după
-// lungimea prefixului) care se aplică unui path dat.
+// matchRoute finds the first route (already sorted in descending order
+// of prefix length) that applies to a given path.
 func matchRoute(routes []route, path string) *route {
 	for i := range routes {
 		if path == routes[i].prefix || strings.HasPrefix(path, routes[i].prefix+"/") {
@@ -196,8 +196,8 @@ func matchRoute(routes []route, path string) *route {
 	return nil
 }
 
-// normalizePrefix asigură că prefixul începe cu "/" și nu are "/" final,
-// pentru a face comparațiile de path predictibile.
+// normalizePrefix ensures the prefix starts with "/" and has no
+// trailing "/", to make path comparisons predictable.
 func normalizePrefix(p string) string {
 	if !strings.HasPrefix(p, "/") {
 		p = "/" + p
@@ -205,8 +205,8 @@ func normalizePrefix(p string) string {
 	return strings.TrimSuffix(p, "/")
 }
 
-// statusRecorder capturează codul de status HTTP scris de reverse proxy,
-// necesar pentru jurnalizarea răspunsului (RecordResponse).
+// statusRecorder captures the HTTP status code written by the reverse
+// proxy, needed for logging the response (RecordResponse).
 type statusRecorder struct {
 	http.ResponseWriter
 	status int
@@ -217,19 +217,20 @@ func (r *statusRecorder) WriteHeader(code int) {
 	r.ResponseWriter.WriteHeader(code)
 }
 
-// upstreamErrorHandler produce un 502 explicit (cu numele upstream-ului)
-// când upstream-ul real e indisponibil, în loc de eroarea generică Go.
+// upstreamErrorHandler produces an explicit 502 (with the upstream's
+// name) when the real upstream is unavailable, instead of Go's generic
+// error.
 func upstreamErrorHandler(name string) func(http.ResponseWriter, *http.Request, error) {
 	return func(w http.ResponseWriter, _ *http.Request, err error) {
-		http.Error(w, fmt.Sprintf("nexus: upstream %q indisponibil: %v", name, err), http.StatusBadGateway)
+		http.Error(w, fmt.Sprintf("nexus: upstream %q is unavailable: %v", name, err), http.StatusBadGateway)
 	}
 }
 
-// makeSpendCapture construiește un httputil.ReverseProxy.ModifyResponse
-// care citește corpul răspunsului primit de la upstream, îl pasează
-// intact către SpendRecorder pentru extragerea costului real, și apoi
-// îl restaurează identic, astfel încât clientul (agentul) primește
-// exact răspunsul original, neschimbat.
+// makeSpendCapture builds an httputil.ReverseProxy.ModifyResponse that
+// reads the response body received from the upstream, passes it intact
+// to SpendRecorder for real cost extraction, and then restores it
+// identically, so the client (the agent) receives exactly the original,
+// unchanged response.
 func makeSpendCapture(upstreamName string, pricePerKTokens float64, spend SpendRecorder) func(*http.Response) error {
 	return func(resp *http.Response) error {
 		meta, ok := requestMetaFromContext(resp.Request.Context())
@@ -240,7 +241,7 @@ func makeSpendCapture(upstreamName string, pricePerKTokens float64, spend SpendR
 		body, err := io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
 		if err != nil {
-			return fmt.Errorf("proxy: nu pot citi răspunsul upstream-ului %q pentru calcul de cost: %w", upstreamName, err)
+			return fmt.Errorf("proxy: cannot read upstream %q's response for cost calculation: %w", upstreamName, err)
 		}
 		resp.Body = io.NopCloser(bytes.NewReader(body))
 

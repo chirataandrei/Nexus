@@ -1,8 +1,7 @@
-// Package logging oferă jurnalizarea structurată a cererilor care trec
-// prin gateway: implicit ca JSON pe stdout, dar interfața AuditSink
-// permite oricărei alte implementări (ex. un registru imutabil
-// tamper-evident / WORM) să se conecteze fără să schimbe restul
-// gateway-ului.
+// Package logging provides structured logging for requests flowing
+// through the gateway: JSON on stdout by default, but the AuditSink
+// interface lets any other implementation (e.g. a tamper-evident WORM
+// ledger) plug in without changing the rest of the gateway.
 package logging
 
 import (
@@ -11,27 +10,28 @@ import (
 	"nexus-gateway/internal/parser"
 )
 
-// AuditSink este interfața pe care orice destinație de jurnalizare a
-// cererilor trebuie să o implementeze. NewStdoutLogger este implementarea
-// implicită; compliance.Sink adaugă scrierea într-un ledger
-// tamper-evident, fără a schimba restul gateway-ului.
+// AuditSink is the interface any request-logging destination must
+// implement. NewStdoutLogger is the default implementation;
+// compliance.Sink adds writing to a tamper-evident ledger, without
+// changing the rest of the gateway.
 type AuditSink interface {
 	RecordRequest(meta *parser.RequestMeta, upstream string)
 	RecordResponse(meta *parser.RequestMeta, upstream string, statusCode int, durationMS int64)
 	RecordRejection(meta *parser.RequestMeta, reason string)
 }
 
-// StdoutLogger este o implementare minimă a AuditSink, care scrie evenimente
-// structurate JSON pe stdout folosind log/slog din biblioteca standard.
+// StdoutLogger is a minimal AuditSink implementation that writes
+// structured JSON events to stdout using the standard library's
+// log/slog.
 type StdoutLogger struct {
 	logger *slog.Logger
 }
 
-// NewStdoutLogger construiește un AuditSink care scrie JSON pe stdout,
-// folosind logger-ul slog implicit al procesului (slog.Default()). main.go
-// configurează acel handler o singură dată, astfel încât toate evenimentele
-// gateway-ului — inclusiv cele emise direct din internal/identity — au
-// același format JSON consistent pe stdout.
+// NewStdoutLogger builds an AuditSink that writes JSON to stdout, using
+// the process's default slog logger (slog.Default()). main.go
+// configures that handler once, so all gateway events — including the
+// ones emitted directly from internal/identity — share the same
+// consistent JSON format on stdout.
 func NewStdoutLogger() *StdoutLogger {
 	return &StdoutLogger{logger: slog.Default()}
 }
@@ -78,16 +78,15 @@ func (l *StdoutLogger) RecordRejection(meta *parser.RequestMeta, reason string) 
 	)
 }
 
-// multiSink trimite fiecare eveniment către mai multe AuditSink-uri, în
-// ordine — ca să păstrăm logurile operaționale lizibile de pe stdout
-// (StdoutLogger) în paralel cu scrierea în lanțul de conformitate
-// tamper-evident (compliance.Sink); cele două nu se exclud.
+// multiSink sends every event to multiple AuditSinks, in order — used
+// to keep the human-readable operational logs on stdout (StdoutLogger)
+// running in parallel with writes to the tamper-evident compliance
+// ledger (compliance.Sink); the two aren't mutually exclusive.
 type multiSink struct {
 	sinks []AuditSink
 }
 
-// Fanout combină mai multe AuditSink-uri într-unul singur. Sink-urile nil
-// sunt ignorate.
+// Fanout combines multiple AuditSinks into one. Nil sinks are ignored.
 func Fanout(sinks ...AuditSink) AuditSink {
 	nonNil := make([]AuditSink, 0, len(sinks))
 	for _, s := range sinks {

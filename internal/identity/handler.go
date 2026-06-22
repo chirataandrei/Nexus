@@ -1,9 +1,9 @@
-// handler.go expune endpoint-ul administrativ prin care un agent face
-// "bootstrap": schimbă o singură dată secretul lui pre-distribuit pe un
-// JWT-SVID efemer. Acesta este singurul punct din Nexus unde circulă un
-// secret pe termen lung — toate cererile ulterioare ale agentului către
-// upstream-uri folosesc exclusiv tokenul efemer, nu mai au nevoie de
-// secretul original.
+// handler.go exposes the administrative endpoint through which an
+// agent does a one-time "bootstrap": exchanging its pre-distributed
+// secret for an ephemeral JWT-SVID. This is the only point in Nexus
+// where a long-lived secret travels — every subsequent request the
+// agent makes to upstreams uses exclusively the ephemeral token, and no
+// longer needs the original secret.
 package identity
 
 import (
@@ -15,22 +15,22 @@ import (
 	"time"
 )
 
-// TokenRequest este corpul JSON acceptat de endpoint-ul de emitere token.
+// TokenRequest is the JSON body accepted by the token-issuing endpoint.
 type TokenRequest struct {
 	AgentID string `json:"agent_id"`
 	Secret  string `json:"secret"`
 	TaskID  string `json:"task_id"`
-	// Scopes este opțional: dacă e omis, agentul primește exact
-	// AllowedScopes din registru. Dacă e specificat, fiecare scope cerut
-	// trebuie să fie deja în AllowedScopes (least privilege — un agent
-	// poate cere mai puțin decât are dreptul, niciodată mai mult).
+	// Scopes is optional: if omitted, the agent gets exactly the
+	// registry's AllowedScopes. If specified, every requested scope must
+	// already be in AllowedScopes (least privilege — an agent may
+	// request less than it's entitled to, never more).
 	Scopes []string `json:"scopes,omitempty"`
-	// TTLSeconds este opțional; implicit și maxim este controlat de
-	// registru/Issuer (implicit 5 minute).
+	// TTLSeconds is optional; the default and maximum are controlled by
+	// the registry/Issuer (defaults to 5 minutes).
 	TTLSeconds int `json:"ttl_seconds,omitempty"`
 }
 
-// TokenResponse este răspunsul JSON cu JWT-SVID-ul emis.
+// TokenResponse is the JSON response carrying the issued JWT-SVID.
 type TokenResponse struct {
 	Token     string   `json:"token"`
 	SpiffeID  string   `json:"spiffe_id"`
@@ -39,44 +39,44 @@ type TokenResponse struct {
 	ExpiresAt int64    `json:"expires_at"`
 }
 
-// maxTokenRequestBytes limitează corpul cererii de token, ca să nu se
-// poată trimite payload-uri uriașe către un endpoint de autentificare.
+// maxTokenRequestBytes limits the size of the token request body, so
+// huge payloads can't be sent to an authentication endpoint.
 const maxTokenRequestBytes = 1 << 16 // 64 KiB
 
-// TokenHandler construiește handler-ul HTTP pentru POST /nexus/identity/token.
-// suspension poate fi nil, caz în care se folosește NoopSuspensionChecker.
+// TokenHandler builds the HTTP handler for POST /nexus/identity/token.
+// suspension may be nil, in which case NoopSuspensionChecker is used.
 func TokenHandler(registry *Registry, issuer *Issuer, suspension SuspensionChecker) http.HandlerFunc {
 	if suspension == nil {
 		suspension = NoopSuspensionChecker{}
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
-			http.Error(w, "metodă neacceptată, folosiți POST", http.StatusMethodNotAllowed)
+			http.Error(w, "method not allowed, use POST", http.StatusMethodNotAllowed)
 			return
 		}
 
 		var req TokenRequest
 		dec := json.NewDecoder(io.LimitReader(r.Body, maxTokenRequestBytes))
 		if err := dec.Decode(&req); err != nil {
-			http.Error(w, "corp JSON invalid", http.StatusBadRequest)
+			http.Error(w, "invalid JSON body", http.StatusBadRequest)
 			return
 		}
 
 		if req.AgentID == "" || req.Secret == "" || req.TaskID == "" {
-			http.Error(w, "agent_id, secret și task_id sunt obligatorii", http.StatusBadRequest)
+			http.Error(w, "agent_id, secret, and task_id are required", http.StatusBadRequest)
 			return
 		}
 
-		// Un agent suspendat (kill-switch) nu poate obține nici măcar un
-		// token nou, chiar dacă secretul lui de bootstrap este corect —
-		// suspendarea este globală și imediată.
+		// A suspended agent (kill switch) can't obtain even a new token,
+		// even if its bootstrap secret is correct — suspension is global
+		// and immediate.
 		if suspended, reason := suspension.IsSuspended(req.AgentID); suspended {
 			slog.Warn("nexus.identity.token_denied_suspended",
 				"event", "token_denied_suspended",
 				"agent_id", req.AgentID,
 				"reason", reason,
 			)
-			http.Error(w, fmt.Sprintf("agentul este suspendat de un operator: %s", reason), http.StatusForbidden)
+			http.Error(w, fmt.Sprintf("agent is suspended by an operator: %s", reason), http.StatusForbidden)
 			return
 		}
 
@@ -87,7 +87,7 @@ func TokenHandler(registry *Registry, issuer *Issuer, suspension SuspensionCheck
 				"agent_id", req.AgentID,
 				"remote_addr", r.RemoteAddr,
 			)
-			http.Error(w, "autentificare eșuată", http.StatusUnauthorized)
+			http.Error(w, "authentication failed", http.StatusUnauthorized)
 			return
 		}
 
@@ -115,7 +115,7 @@ func TokenHandler(registry *Registry, issuer *Issuer, suspension SuspensionCheck
 		token, claims, err := issuer.IssueSVID(req.AgentID, req.TaskID, scopes, ttl)
 		if err != nil {
 			slog.Error("nexus.identity.issue_failed", "event", "token_issue_failed", "agent_id", req.AgentID, "error", err.Error())
-			http.Error(w, "nu pot emite tokenul", http.StatusInternalServerError)
+			http.Error(w, "cannot issue token", http.StatusInternalServerError)
 			return
 		}
 

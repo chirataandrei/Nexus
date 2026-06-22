@@ -1,8 +1,9 @@
-// Package config încarcă configurația gateway-ului Nexus Trust Protocol:
-// adresa pe care ascultă serverul și lista de upstream-uri (modele LLM,
-// servicii interne) către care se rutează cererile, pe bază de prefix de
-// path. Formatul este JSON simplu, fără dependențe externe, pentru a
-// păstra gateway-ul compilabil doar cu biblioteca standard Go.
+// Package config loads the Nexus Trust Protocol gateway's
+// configuration: the address the server listens on and the list of
+// upstreams (LLM models, internal services) requests are routed to,
+// based on path prefix. The format is plain JSON, with no external
+// dependencies, to keep the gateway buildable with just the Go standard
+// library.
 package config
 
 import (
@@ -12,87 +13,86 @@ import (
 	"time"
 )
 
-// Upstream descrie o destinație către care Nexus poate ruta trafic:
-// un model LLM extern (OpenAI, Anthropic) sau un serviciu intern al
-// companiei (bază de date, API propriu).
+// Upstream describes a destination Nexus can route traffic to: an
+// external LLM model (OpenAI, Anthropic) or an internal company service
+// (database, in-house API).
 type Upstream struct {
-	// Name este identificatorul intern al upstream-ului, folosit în loguri
-	// și în politicile de buget și conformitate.
+	// Name is the upstream's internal identifier, used in logs and in
+	// budget/compliance policies.
 	Name string `json:"name"`
-	// PathPrefix este prefixul de URL pe care Nexus îl interceptează,
-	// ex: "/v1/openai" sau "/v1/anthropic".
+	// PathPrefix is the URL prefix Nexus intercepts, e.g. "/v1/openai"
+	// or "/v1/anthropic".
 	PathPrefix string `json:"path_prefix"`
-	// TargetURL este adresa reală a upstream-ului către care se face proxy.
+	// TargetURL is the upstream's real address the proxy forwards to.
 	TargetURL string `json:"target_url"`
-	// StripPrefix, dacă true, elimină PathPrefix din path înainte de a
-	// trimite cererea către TargetURL (util când upstream-ul nu cunoaște
-	// prefixul intern folosit de Nexus).
+	// StripPrefix, if true, removes PathPrefix from the path before
+	// sending the request to TargetURL (useful when the upstream doesn't
+	// know about the internal prefix Nexus uses).
 	StripPrefix bool `json:"strip_prefix"`
-	// RequiredScope, dacă setat, obligă orice cerere către acest
-	// upstream să prezinte un JWT-SVID care conține exact acest scope.
-	// Gol = orice identitate validă este suficientă, fără restricție de
-	// scope pe această rută.
+	// RequiredScope, if set, requires every request to this upstream to
+	// present a JWT-SVID containing exactly this scope. Empty = any valid
+	// identity is enough, with no scope restriction on this route.
 	RequiredScope string `json:"required_scope,omitempty"`
-	// PricePerThousandTokensUSD este prețul folosit de FinOps pentru a
-	// calcula costul real al apelurilor către acest upstream, pe baza
-	// câmpului "usage" din răspunsul modelului LLM. 0 = upstream-ul nu
-	// este taxat per token (ex. un instrument intern).
+	// PricePerThousandTokensUSD is the price FinOps uses to calculate the
+	// real cost of calls to this upstream, based on the "usage" field in
+	// the LLM model's response. 0 = this upstream isn't billed per token
+	// (e.g. an internal tool).
 	PricePerThousandTokensUSD float64 `json:"price_per_1k_tokens_usd,omitempty"`
-	// ToolScopes mapează numele unui instrument MCP (ex. "send_email") la
-	// scope-ul cerut pentru EXACT
-	// acel instrument, mai fin decât RequiredScope (care se aplică la
-	// nivelul întregului upstream). Dacă o cerere MCP "tools/call" apelează
-	// un instrument prezent în această hartă, scope-ul lui îl suprascrie
-	// pe RequiredScope pentru cererea respectivă — ex. "read_email" poate
-	// cere doar tools:email:read, iar "delete_email" poate cere
-	// tools:email:delete, chiar dacă ambele trec prin același upstream.
+	// ToolScopes maps the name of an MCP tool (e.g. "send_email") to the
+	// scope required for EXACTLY that tool, finer-grained than
+	// RequiredScope (which applies to the whole upstream). If an MCP
+	// "tools/call" request calls a tool present in this map, that tool's
+	// scope overrides RequiredScope for that specific request — e.g.
+	// "read_email" may only require tools:email:read, while
+	// "delete_email" may require tools:email:delete, even though both go
+	// through the same upstream.
 	ToolScopes map[string]string `json:"tool_scopes,omitempty"`
 }
 
-// Config este configurația completă a gateway-ului Nexus.
+// Config is the gateway's complete configuration.
 type Config struct {
-	// ListenAddr este adresa TCP pe care ascultă gateway-ul, ex: ":8080".
+	// ListenAddr is the TCP address the gateway listens on, e.g. ":8080".
 	ListenAddr string `json:"listen_addr"`
-	// Upstreams este lista de destinații cunoscute de gateway.
+	// Upstreams is the list of destinations known to the gateway.
 	Upstreams []Upstream `json:"upstreams"`
-	// MaxBodyBytes limitează dimensiunea corpului cererilor acceptate,
-	// ca primă barieră de protecție împotriva payload-urilor abuzive.
+	// MaxBodyBytes limits the size of accepted request bodies, as a
+	// first line of defense against abusive payloads.
 	MaxBodyBytes int64 `json:"max_body_bytes"`
-	// ReadHeaderTimeout și ShutdownTimeout controlează robustețea
-	// serverului HTTP la cereri lente sau la închidere controlată.
+	// ReadHeaderTimeout and ShutdownTimeout control the HTTP server's
+	// resilience to slow requests and its controlled shutdown.
 	ReadHeaderTimeoutSeconds int `json:"read_header_timeout_seconds"`
 	ShutdownTimeoutSeconds   int `json:"shutdown_timeout_seconds"`
 
-	// TrustDomain este domeniul de încredere SPIFFE al acestei instanțe
-	// Nexus, ex. "nexus.trust". Toate identitățile emise și validate sunt
-	// legate de acest domeniu.
+	// TrustDomain is this Nexus instance's SPIFFE trust domain, e.g.
+	// "nexus.trust". Every identity issued and validated is tied to this
+	// domain.
 	TrustDomain string `json:"trust_domain"`
-	// AgentsFile este calea către registrul de agenți (configs/agents.json),
-	// folosit de endpoint-ul de bootstrap al identității.
+	// AgentsFile is the path to the agent registry (configs/agents.json),
+	// used by the identity bootstrap endpoint.
 	AgentsFile string `json:"agents_file"`
-	// DefaultTokenTTLSeconds și MaxTokenTTLSeconds controlează durata de
-	// viață a JWT-SVID-urilor emise. Implicit: 5 minute.
+	// DefaultTokenTTLSeconds and MaxTokenTTLSeconds control the lifetime
+	// of issued JWT-SVIDs. Default: 5 minutes.
 	DefaultTokenTTLSeconds int `json:"default_token_ttl_seconds,omitempty"`
 	MaxTokenTTLSeconds     int `json:"max_token_ttl_seconds,omitempty"`
 
-	// FinOpsPoliciesFile este calea către politicile financiare per agent
-	// (configs/finops_policies.json): buget zilnic și limită de tokeni
-	// per sarcină.
+	// FinOpsPoliciesFile is the path to the per-agent financial policies
+	// (configs/finops_policies.json): daily budget and per-task token
+	// limit.
 	FinOpsPoliciesFile string `json:"finops_policies_file"`
 
-	// ComplianceLedgerFile este calea fișierului WORM (append-only) în
-	// care se scrie lanțul tamper-evident de conformitate.
+	// ComplianceLedgerFile is the path to the WORM (append-only) file the
+	// tamper-evident compliance chain is written to.
 	ComplianceLedgerFile string `json:"compliance_ledger_file"`
-	// ComplianceRetentionMonths este politica de retenție declarată,
-	// impusă să fie minim 6 — cerința explicită a Articolului 12.
+	// ComplianceRetentionMonths is the declared retention policy,
+	// required to be at least 6 — the explicit requirement of Article 12.
 	ComplianceRetentionMonths int `json:"compliance_retention_months"`
-	// MaxPromptExcerptBytes limitează câte bytes din corpul cererii sunt
-	// copiate ca text lizibil în lanțul de conformitate (digest-ul
-	// SHA-256 este mereu integral). 0 = se folosește implicit 4096.
+	// MaxPromptExcerptBytes limits how many bytes of the request body are
+	// copied as readable text into the compliance chain (the SHA-256
+	// digest is always full). 0 = defaults to 4096.
 	MaxPromptExcerptBytes int `json:"max_prompt_excerpt_bytes,omitempty"`
 }
 
-// ReadHeaderTimeout convertește valoarea din config în time.Duration.
+// ReadHeaderTimeout converts the config value to a time.Duration.
 func (c Config) ReadHeaderTimeout() time.Duration {
 	if c.ReadHeaderTimeoutSeconds <= 0 {
 		return 5 * time.Second
@@ -100,7 +100,7 @@ func (c Config) ReadHeaderTimeout() time.Duration {
 	return time.Duration(c.ReadHeaderTimeoutSeconds) * time.Second
 }
 
-// ShutdownTimeout convertește valoarea din config în time.Duration.
+// ShutdownTimeout converts the config value to a time.Duration.
 func (c Config) ShutdownTimeout() time.Duration {
 	if c.ShutdownTimeoutSeconds <= 0 {
 		return 10 * time.Second
@@ -108,8 +108,8 @@ func (c Config) ShutdownTimeout() time.Duration {
 	return time.Duration(c.ShutdownTimeoutSeconds) * time.Second
 }
 
-// DefaultTokenTTL returnează TTL-ul implicit al JWT-SVID-urilor emise.
-// Implicit 5 minute.
+// DefaultTokenTTL returns the default lifetime of issued JWT-SVIDs.
+// Defaults to 5 minutes.
 func (c Config) DefaultTokenTTL() time.Duration {
 	if c.DefaultTokenTTLSeconds <= 0 {
 		return 5 * time.Minute
@@ -117,8 +117,8 @@ func (c Config) DefaultTokenTTL() time.Duration {
 	return time.Duration(c.DefaultTokenTTLSeconds) * time.Second
 }
 
-// MaxTokenTTL returnează TTL-ul maxim implicit (folosit ca fallback de
-// Registry pentru agenții fără max_ttl_seconds propriu).
+// MaxTokenTTL returns the default maximum TTL (used as a fallback by
+// Registry for agents without their own max_ttl_seconds).
 func (c Config) MaxTokenTTL() time.Duration {
 	if c.MaxTokenTTLSeconds <= 0 {
 		return c.DefaultTokenTTL()
@@ -126,16 +126,16 @@ func (c Config) MaxTokenTTL() time.Duration {
 	return time.Duration(c.MaxTokenTTLSeconds) * time.Second
 }
 
-// Load citește și validează un fișier de configurație JSON de pe disc.
+// Load reads and validates a JSON configuration file from disk.
 func Load(path string) (*Config, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("config: nu pot citi %s: %w", path, err)
+		return nil, fmt.Errorf("config: cannot read %s: %w", path, err)
 	}
 
 	var cfg Config
 	if err := json.Unmarshal(raw, &cfg); err != nil {
-		return nil, fmt.Errorf("config: JSON invalid în %s: %w", path, err)
+		return nil, fmt.Errorf("config: invalid JSON in %s: %w", path, err)
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -144,37 +144,37 @@ func Load(path string) (*Config, error) {
 	return &cfg, nil
 }
 
-// Validate verifică minimul necesar pentru ca gateway-ul să poată porni
-// în siguranță: o adresă de ascultare și cel puțin un upstream valid.
+// Validate checks the minimum needed for the gateway to start safely:
+// a listen address and at least one valid upstream.
 func (c Config) Validate() error {
 	if c.ListenAddr == "" {
-		return fmt.Errorf("config: listen_addr este obligatoriu")
+		return fmt.Errorf("config: listen_addr is required")
 	}
 	if len(c.Upstreams) == 0 {
-		return fmt.Errorf("config: este necesar cel puțin un upstream")
+		return fmt.Errorf("config: at least one upstream is required")
 	}
 	if c.TrustDomain == "" {
-		return fmt.Errorf("config: trust_domain este obligatoriu (identitate SPIFFE)")
+		return fmt.Errorf("config: trust_domain is required (SPIFFE identity)")
 	}
 	if c.AgentsFile == "" {
-		return fmt.Errorf("config: agents_file este obligatoriu (registrul de agenți)")
+		return fmt.Errorf("config: agents_file is required (agent registry)")
 	}
 	if c.FinOpsPoliciesFile == "" {
-		return fmt.Errorf("config: finops_policies_file este obligatoriu (politici de buget)")
+		return fmt.Errorf("config: finops_policies_file is required (budget policies)")
 	}
 	if c.ComplianceLedgerFile == "" {
-		return fmt.Errorf("config: compliance_ledger_file este obligatoriu (registru EU AI Act)")
+		return fmt.Errorf("config: compliance_ledger_file is required (EU AI Act ledger)")
 	}
 	if c.ComplianceRetentionMonths < 6 {
-		return fmt.Errorf("config: compliance_retention_months trebuie să fie cel puțin 6 (Articolul 12), am primit %d", c.ComplianceRetentionMonths)
+		return fmt.Errorf("config: compliance_retention_months must be at least 6 (Article 12), got %d", c.ComplianceRetentionMonths)
 	}
 	seen := make(map[string]bool, len(c.Upstreams))
 	for _, u := range c.Upstreams {
 		if u.Name == "" || u.PathPrefix == "" || u.TargetURL == "" {
-			return fmt.Errorf("config: upstream invalid (name/path_prefix/target_url lipsă): %+v", u)
+			return fmt.Errorf("config: invalid upstream (missing name/path_prefix/target_url): %+v", u)
 		}
 		if seen[u.PathPrefix] {
-			return fmt.Errorf("config: path_prefix duplicat: %s", u.PathPrefix)
+			return fmt.Errorf("config: duplicate path_prefix: %s", u.PathPrefix)
 		}
 		seen[u.PathPrefix] = true
 	}

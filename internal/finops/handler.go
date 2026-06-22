@@ -1,7 +1,7 @@
-// handler.go expune API-ul de administrare FinOps și un dashboard HTML
-// minimal (fără build step, fără dependențe JS externe) prin care un
-// administrator vede consumul curent al fiecărui agent și poate ajusta
-// politicile de buget la runtime.
+// handler.go exposes the FinOps admin API and a minimal HTML dashboard
+// (no build step, no external JS dependencies) through which an
+// administrator sees each agent's current consumption and can adjust
+// budget policies at runtime.
 package finops
 
 import (
@@ -13,8 +13,8 @@ import (
 
 const maxPolicyRequestBytes = 1 << 16 // 64 KiB
 
-// UsageEntry combină politica unui agent cu consumul lui curent, pentru
-// a fi afișat direct într-un tabel de dashboard.
+// UsageEntry combines an agent's policy with its current consumption,
+// meant to be displayed directly in a dashboard table.
 type UsageEntry struct {
 	AgentID          string         `json:"agent_id"`
 	DailyBudgetUSD   float64        `json:"daily_budget_usd"`
@@ -24,12 +24,13 @@ type UsageEntry struct {
 	TaskTokens       map[string]int `json:"task_tokens,omitempty"`
 }
 
-// UsageHandler expune GET /nexus/finops/usage: o listă cu toți agenții
-// care au o politică explicită și/sau au generat deja consum astăzi.
+// UsageHandler exposes GET /nexus/finops/usage: a list of every agent
+// that has an explicit policy and/or has already generated consumption
+// today.
 func UsageHandler(ledger *Ledger, policies *PolicyRegistry) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
-			http.Error(w, "metodă neacceptată, folosiți GET", http.StatusMethodNotAllowed)
+			http.Error(w, "method not allowed, use GET", http.StatusMethodNotAllowed)
 			return
 		}
 
@@ -69,14 +70,14 @@ func UsageHandler(ledger *Ledger, policies *PolicyRegistry) http.HandlerFunc {
 	}
 }
 
-// policiesResponse este forma JSON returnată de GET /nexus/finops/policies.
+// policiesResponse is the JSON shape returned by GET /nexus/finops/policies.
 type policiesResponse struct {
 	Default AgentPolicy   `json:"default"`
 	Agents  []AgentPolicy `json:"agents"`
 }
 
-// PoliciesHandler expune GET (citește politicile curente) și POST
-// (creează/actualizează politica unui agent) pe /nexus/finops/policies.
+// PoliciesHandler exposes GET (reads current policies) and POST
+// (creates/updates an agent's policy) on /nexus/finops/policies.
 func PoliciesHandler(policies *PolicyRegistry) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
@@ -89,7 +90,7 @@ func PoliciesHandler(policies *PolicyRegistry) http.HandlerFunc {
 			var p AgentPolicy
 			dec := json.NewDecoder(io.LimitReader(r.Body, maxPolicyRequestBytes))
 			if err := dec.Decode(&p); err != nil {
-				http.Error(w, "corp JSON invalid", http.StatusBadRequest)
+				http.Error(w, "invalid JSON body", http.StatusBadRequest)
 				return
 			}
 			if err := policies.Upsert(p); err != nil {
@@ -106,19 +107,19 @@ func PoliciesHandler(policies *PolicyRegistry) http.HandlerFunc {
 			_ = json.NewEncoder(w).Encode(p)
 
 		default:
-			http.Error(w, "metodă neacceptată, folosiți GET sau POST", http.StatusMethodNotAllowed)
+			http.Error(w, "method not allowed, use GET or POST", http.StatusMethodNotAllowed)
 		}
 	}
 }
 
-// DashboardHandler expune GET /nexus/finops/dashboard: o pagină HTML
-// auto-conținută (CSS+JS inline, fără build step) care citește
-// /nexus/finops/usage și /nexus/finops/policies și permite actualizarea
-// bugetului unui agent direct din browser.
+// DashboardHandler exposes GET /nexus/finops/dashboard: a self-contained
+// HTML page (inline CSS+JS, no build step) that reads
+// /nexus/finops/usage and /nexus/finops/policies and lets you update an
+// agent's budget directly from the browser.
 func DashboardHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
-			http.Error(w, "metodă neacceptată, folosiți GET", http.StatusMethodNotAllowed)
+			http.Error(w, "method not allowed, use GET", http.StatusMethodNotAllowed)
 			return
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -127,7 +128,7 @@ func DashboardHandler() http.HandlerFunc {
 }
 
 const dashboardHTML = `<!doctype html>
-<html lang="ro">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <title>Nexus Trust Protocol — FinOps</title>
@@ -150,20 +151,20 @@ const dashboardHTML = `<!doctype html>
 </head>
 <body>
   <h1>Nexus Trust Protocol — FinOps</h1>
-  <p class="sub">Consum curent per agent (resetat zilnic, UTC) și politici de buget.</p>
+  <p class="sub">Current consumption per agent (reset daily, UTC) and budget policies.</p>
 
   <table id="usage-table">
     <thead>
-      <tr><th>Agent</th><th>Cheltuit azi</th><th>Buget zilnic</th><th>Sarcini active</th></tr>
+      <tr><th>Agent</th><th>Spent today</th><th>Daily budget</th><th>Active tasks</th></tr>
     </thead>
     <tbody></tbody>
   </table>
 
   <form id="policy-form">
     <label>Agent ID <input name="agent_id" required></label>
-    <label>Buget zilnic (USD) <input name="daily_budget_usd" type="number" step="0.01" min="0" required></label>
-    <label>Max tokeni / sarcină <input name="max_tokens_per_task" type="number" step="1" min="0" required></label>
-    <button type="submit">Salvează politica</button>
+    <label>Daily budget (USD) <input name="daily_budget_usd" type="number" step="0.01" min="0" required></label>
+    <label>Max tokens / task <input name="max_tokens_per_task" type="number" step="1" min="0" required></label>
+    <button type="submit">Save policy</button>
   </form>
   <div id="status"></div>
 
@@ -180,7 +181,7 @@ async function loadUsage() {
     tr.innerHTML =
       '<td>' + row.agent_id + '</td>' +
       '<td class="' + (over ? 'over' : 'ok') + '">$' + row.spent_usd_today.toFixed(4) + '</td>' +
-      '<td>' + (row.daily_budget_usd > 0 ? '$' + row.daily_budget_usd.toFixed(2) : 'nelimitat') + '</td>' +
+      '<td>' + (row.daily_budget_usd > 0 ? '$' + row.daily_budget_usd.toFixed(2) : 'unlimited') + '</td>' +
       '<td>' + tasks + '</td>';
     tbody.appendChild(tr);
   }
@@ -197,10 +198,10 @@ document.getElementById('policy-form').addEventListener('submit', async (ev) => 
   const res = await fetch('/nexus/finops/policies', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
   const statusEl = document.getElementById('status');
   if (res.ok) {
-    statusEl.textContent = 'Politică salvată pentru ' + payload.agent_id + '.';
+    statusEl.textContent = 'Policy saved for ' + payload.agent_id + '.';
     await loadUsage();
   } else {
-    statusEl.textContent = 'Eroare: ' + await res.text();
+    statusEl.textContent = 'Error: ' + await res.text();
   }
 });
 

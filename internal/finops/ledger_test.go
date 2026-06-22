@@ -10,7 +10,7 @@ func TestLedger_AuthorizeAllowsWithinBudget(t *testing.T) {
 	policy := AgentPolicy{AgentID: "agent-1", DailyBudgetUSD: 5.0, MaxTokensPerTask: 1000}
 
 	if err := l.Authorize("agent-1", "task-1", policy); err != nil {
-		t.Fatalf("Authorize ar trebui să accepte un agent fără consum: %v", err)
+		t.Fatalf("Authorize should accept an agent with no spending: %v", err)
 	}
 }
 
@@ -18,10 +18,10 @@ func TestLedger_AuthorizeBlocksWhenDailyBudgetExceeded(t *testing.T) {
 	l := NewLedger()
 	policy := AgentPolicy{AgentID: "agent-1", DailyBudgetUSD: 1.0}
 
-	l.RecordSpend("agent-1", "task-1", 100, 1.0) // exact bugetul
+	l.RecordSpend("agent-1", "task-1", 100, 1.0) // exactly the budget
 
 	if err := l.Authorize("agent-1", "task-1", policy); err == nil {
-		t.Error("Authorize ar trebui să respingă o cerere când bugetul zilnic e deja epuizat")
+		t.Error("Authorize should reject a request once the daily budget is already exhausted")
 	}
 }
 
@@ -32,19 +32,19 @@ func TestLedger_AuthorizeBlocksWhenTaskTokenLimitReached(t *testing.T) {
 	l.RecordSpend("agent-1", "task-1", 500, 0.01)
 
 	if err := l.Authorize("agent-1", "task-1", policy); err == nil {
-		t.Error("Authorize ar trebui să respingă atunci când limita de tokeni per sarcină e atinsă")
+		t.Error("Authorize should reject once the per-task token limit is reached")
 	}
-	// O sarcină diferită a aceluiași agent nu trebuie afectată.
+	// A different task for the same agent should not be affected.
 	if err := l.Authorize("agent-1", "task-2", policy); err != nil {
-		t.Errorf("o sarcină nouă a aceluiași agent nu ar trebui blocată: %v", err)
+		t.Errorf("a new task for the same agent should not be blocked: %v", err)
 	}
 }
 
 func TestLedger_RecursiveHallucinationLoopGetsCircuitBroken(t *testing.T) {
-	// Simulează exact scenariul din specificație: un agent care, printr-o
-	// buclă recurentă, face cereri repetate ce consumă mult cost, până
-	// depășește bugetul — Nexus trebuie să-l blocheze înainte de a mai
-	// contacta LLM-ul costisitor.
+	// Simulates exactly the scenario from the spec: an agent that, through
+	// a recurring loop, makes repeated requests that consume a lot of
+	// cost, until it exceeds the budget — Nexus must block it before it
+	// can contact the costly LLM again.
 	l := NewLedger()
 	policy := AgentPolicy{AgentID: "agent-loop", DailyBudgetUSD: 5.0}
 
@@ -54,14 +54,14 @@ func TestLedger_RecursiveHallucinationLoopGetsCircuitBroken(t *testing.T) {
 			break
 		}
 		calls++
-		l.RecordSpend("agent-loop", "task-x", 1000, 1.0) // $1 pe apel
+		l.RecordSpend("agent-loop", "task-x", 1000, 1.0) // $1 per call
 	}
 
 	if calls != 5 {
-		t.Errorf("ar trebui exact 5 apeluri permise ($5 buget / $1 per apel), am primit %d", calls)
+		t.Errorf("expected exactly 5 allowed calls ($5 budget / $1 per call), got %d", calls)
 	}
 	if err := l.Authorize("agent-loop", "task-x", policy); err == nil {
-		t.Error("după 5 apeluri (=$5 cheltuiți), al 6-lea ar trebui blocat")
+		t.Error("after 5 calls (=$5 spent), the 6th should be blocked")
 	}
 }
 
@@ -72,10 +72,10 @@ func TestLedger_RecordSpendAccumulates(t *testing.T) {
 
 	snap := snapshotFor(t, l, "agent-1")
 	if snap.SpentUSD != 0.75 {
-		t.Errorf("spentUSD = %v, vroiam 0.75", snap.SpentUSD)
+		t.Errorf("spentUSD = %v, want 0.75", snap.SpentUSD)
 	}
 	if snap.TaskTokens["task-1"] != 150 {
-		t.Errorf("tokens task-1 = %d, vroiam 150", snap.TaskTokens["task-1"])
+		t.Errorf("tokens task-1 = %d, want 150", snap.TaskTokens["task-1"])
 	}
 }
 
@@ -87,17 +87,17 @@ func TestLedger_ResetsOnNewDay(t *testing.T) {
 	l.RecordSpend("agent-1", "task-1", 100, 4.0)
 	policy := AgentPolicy{AgentID: "agent-1", DailyBudgetUSD: 5.0}
 	if err := l.Authorize("agent-1", "task-1", policy); err != nil {
-		t.Fatalf("ar trebui încă sub buget: %v", err)
+		t.Fatalf("should still be under budget: %v", err)
 	}
 
-	// Trece în ziua următoare.
+	// Roll over to the next day.
 	current = current.Add(2 * time.Hour)
 	if err := l.Authorize("agent-1", "task-1", policy); err != nil {
-		t.Errorf("bugetul ar trebui resetat după schimbarea zilei UTC: %v", err)
+		t.Errorf("the budget should be reset after the UTC day rolls over: %v", err)
 	}
 	snap := snapshotFor(t, l, "agent-1")
 	if snap.SpentUSD != 0 {
-		t.Errorf("spentUSD ar trebui resetat la 0 în noua zi, am primit %v", snap.SpentUSD)
+		t.Errorf("spentUSD should be reset to 0 on the new day, got %v", snap.SpentUSD)
 	}
 }
 
@@ -108,6 +108,6 @@ func snapshotFor(t *testing.T, l *Ledger, agentID string) AgentUsageSnapshot {
 			return s
 		}
 	}
-	t.Fatalf("nu există snapshot pentru agentul %q", agentID)
+	t.Fatalf("no snapshot found for agent %q", agentID)
 	return AgentUsageSnapshot{}
 }

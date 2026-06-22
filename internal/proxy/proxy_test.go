@@ -12,9 +12,9 @@ import (
 	"nexus-gateway/internal/parser"
 )
 
-// newMockUpstream pornește un server HTTP local care simulează un model
-// LLM/upstream: răspunde 200 și ecouă path-ul primit, ca să putem verifica
-// că rutarea (inclusiv strip_prefix) funcționează corect.
+// newMockUpstream starts a local HTTP server that simulates an
+// LLM/upstream: it responds 200 and echoes back the received path, so we
+// can verify routing (including strip_prefix) works correctly.
 func newMockUpstream(t *testing.T) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -38,7 +38,7 @@ func TestServer_RoutesToCorrectUpstreamWithStrippedPrefix(t *testing.T) {
 
 	srv, err := NewServer(cfg, nil, nil, nil, nil)
 	if err != nil {
-		t.Fatalf("NewServer a eșuat: %v", err)
+		t.Fatalf("NewServer failed: %v", err)
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/openai/v1/models", nil)
@@ -46,10 +46,10 @@ func TestServer_RoutesToCorrectUpstreamWithStrippedPrefix(t *testing.T) {
 	srv.Handler().ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, vroiam %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
 	}
 	if got := rec.Body.String(); got != "ok:/v1/models" {
-		t.Errorf("upstream a primit path greșit (strip_prefix nu a funcționat): %q", got)
+		t.Errorf("upstream received the wrong path (strip_prefix didn't work): %q", got)
 	}
 }
 
@@ -62,22 +62,22 @@ func TestServer_404WhenNoUpstreamMatches(t *testing.T) {
 	}
 	srv, err := NewServer(cfg, nil, nil, nil, nil)
 	if err != nil {
-		t.Fatalf("NewServer a eșuat: %v", err)
+		t.Fatalf("NewServer failed: %v", err)
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/v1/necunoscut", nil)
+	req := httptest.NewRequest(http.MethodGet, "/v1/unknown", nil)
 	rec := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusNotFound {
-		t.Errorf("status = %d, vroiam %d", rec.Code, http.StatusNotFound)
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusNotFound)
 	}
 }
 
 type rejectingValidator struct{}
 
 func (rejectingValidator) Validate(_ context.Context, _ *parser.RequestMeta, _ *http.Request) error {
-	return errors.New("identitate respinsă în test")
+	return errors.New("identity rejected in test")
 }
 
 func TestServer_RejectsWhenValidatorFails(t *testing.T) {
@@ -92,7 +92,7 @@ func TestServer_RejectsWhenValidatorFails(t *testing.T) {
 	}
 	srv, err := NewServer(cfg, rejectingValidator{}, nil, nil, nil)
 	if err != nil {
-		t.Fatalf("NewServer a eșuat: %v", err)
+		t.Fatalf("NewServer failed: %v", err)
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/openai/models", nil)
@@ -100,7 +100,7 @@ func TestServer_RejectsWhenValidatorFails(t *testing.T) {
 	srv.Handler().ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusUnauthorized {
-		t.Errorf("status = %d, vroiam %d", rec.Code, http.StatusUnauthorized)
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
 	}
 }
 
@@ -135,7 +135,7 @@ func TestServer_ToolScopeOverridesUpstreamRequiredScope(t *testing.T) {
 	validator := &capturingValidator{}
 	srv, err := NewServer(cfg, validator, nil, nil, nil)
 	if err != nil {
-		t.Fatalf("NewServer a eșuat: %v", err)
+		t.Fatalf("NewServer failed: %v", err)
 	}
 
 	body := `{"jsonrpc":"2.0","method":"tools/call","id":"1","params":{"name":"send_email"}}`
@@ -144,7 +144,7 @@ func TestServer_ToolScopeOverridesUpstreamRequiredScope(t *testing.T) {
 	srv.Handler().ServeHTTP(rec, req)
 
 	if validator.lastRequiredScope != "tools:email:send" {
-		t.Errorf("RequiredScope = %q, vroiam scope-ul specific tool-ului (tools:email:send)", validator.lastRequiredScope)
+		t.Errorf("RequiredScope = %q, want the tool-specific scope (tools:email:send)", validator.lastRequiredScope)
 	}
 }
 
@@ -167,7 +167,7 @@ func TestServer_FallsBackToUpstreamScopeForUnknownTool(t *testing.T) {
 	validator := &capturingValidator{}
 	srv, err := NewServer(cfg, validator, nil, nil, nil)
 	if err != nil {
-		t.Fatalf("NewServer a eșuat: %v", err)
+		t.Fatalf("NewServer failed: %v", err)
 	}
 
 	body := `{"jsonrpc":"2.0","method":"tools/call","id":"1","params":{"name":"unknown_tool"}}`
@@ -176,7 +176,7 @@ func TestServer_FallsBackToUpstreamScopeForUnknownTool(t *testing.T) {
 	srv.Handler().ServeHTTP(rec, req)
 
 	if validator.lastRequiredScope != "tools:internal:invoke" {
-		t.Errorf("RequiredScope = %q, vroiam fallback la scope-ul generic al upstream-ului", validator.lastRequiredScope)
+		t.Errorf("RequiredScope = %q, want fallback to the upstream's generic scope", validator.lastRequiredScope)
 	}
 }
 
@@ -212,7 +212,7 @@ func TestServer_InvokesSpendRecorderWithResponseBodyIntact(t *testing.T) {
 	spend := &fakeSpendRecorder{}
 	srv, err := NewServer(cfg, nil, nil, spend, nil)
 	if err != nil {
-		t.Fatalf("NewServer a eșuat: %v", err)
+		t.Fatalf("NewServer failed: %v", err)
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/openai/models", nil)
@@ -223,18 +223,18 @@ func TestServer_InvokesSpendRecorderWithResponseBodyIntact(t *testing.T) {
 		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
 	}
 	if rec.Body.String() != llmResponseBody {
-		t.Errorf("corpul răspunsului trimis clientului a fost modificat: %q", rec.Body.String())
+		t.Errorf("the response body sent to the client was modified: %q", rec.Body.String())
 	}
 
 	if len(spend.calls) != 1 {
-		t.Fatalf("SpendRecorder.RecordSpend ar trebui apelat exact o dată, a fost apelat %d ori", len(spend.calls))
+		t.Fatalf("SpendRecorder.RecordSpend should be called exactly once, it was called %d times", len(spend.calls))
 	}
 	call := spend.calls[0]
 	if call.upstreamName != "mock-llm" || call.price != 0.002 {
-		t.Errorf("parametri greșiți transmiși către RecordSpend: %+v", call)
+		t.Errorf("wrong parameters passed to RecordSpend: %+v", call)
 	}
 	if string(call.body) != llmResponseBody {
-		t.Errorf("RecordSpend nu a primit corpul real al răspunsului: %q", call.body)
+		t.Errorf("RecordSpend did not receive the real response body: %q", call.body)
 	}
 }
 
@@ -253,7 +253,7 @@ func TestServer_LongestPrefixWins(t *testing.T) {
 	}
 	srv, err := NewServer(cfg, nil, nil, nil, nil)
 	if err != nil {
-		t.Fatalf("NewServer a eșuat: %v", err)
+		t.Fatalf("NewServer failed: %v", err)
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/openai/models", nil)
@@ -261,6 +261,6 @@ func TestServer_LongestPrefixWins(t *testing.T) {
 	srv.Handler().ServeHTTP(rec, req)
 
 	if !strings.Contains(rec.Body.String(), "/v1/openai/models") {
-		t.Errorf("răspuns inesperat de la upstream greșit: %s", rec.Body.String())
+		t.Errorf("unexpected response from the wrong upstream: %s", rec.Body.String())
 	}
 }

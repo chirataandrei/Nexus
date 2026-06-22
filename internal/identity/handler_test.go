@@ -13,7 +13,7 @@ import (
 
 func newTestRegistry(t *testing.T) *Registry {
 	t.Helper()
-	hash := HashSecret("agent-1", "secret-corect")
+	hash := HashSecret("agent-1", "correct-secret")
 	content := `{
 		"default_max_ttl_seconds": 300,
 		"agents": [
@@ -23,11 +23,11 @@ func newTestRegistry(t *testing.T) *Registry {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "agents.json")
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
-		t.Fatalf("nu pot scrie fișierul temporar: %v", err)
+		t.Fatalf("cannot write temp file: %v", err)
 	}
 	reg, err := LoadRegistry(path, 5*time.Minute)
 	if err != nil {
-		t.Fatalf("LoadRegistry a eșuat: %v", err)
+		t.Fatalf("LoadRegistry failed: %v", err)
 	}
 	return reg
 }
@@ -36,7 +36,7 @@ func doTokenRequest(t *testing.T, handler http.HandlerFunc, body any) *httptest.
 	t.Helper()
 	raw, err := json.Marshal(body)
 	if err != nil {
-		t.Fatalf("nu pot serializa cererea: %v", err)
+		t.Fatalf("cannot serialize request: %v", err)
 	}
 	req := httptest.NewRequest(http.MethodPost, "/nexus/identity/token", bytes.NewReader(raw))
 	rec := httptest.NewRecorder()
@@ -51,24 +51,24 @@ func TestTokenHandler_IssuesTokenForValidCredentials(t *testing.T) {
 
 	rec := doTokenRequest(t, handler, map[string]any{
 		"agent_id": "agent-1",
-		"secret":   "secret-corect",
+		"secret":   "correct-secret",
 		"task_id":  "task-1",
 	})
 
 	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, vroiam 200, body=%s", rec.Code, rec.Body.String())
+		t.Fatalf("status = %d, want 200, body=%s", rec.Code, rec.Body.String())
 	}
 	var resp TokenResponse
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("răspuns JSON invalid: %v", err)
+		t.Fatalf("invalid JSON response: %v", err)
 	}
 	if resp.Token == "" {
-		t.Error("token-ul emis ar trebui nevid")
+		t.Error("the issued token should be non-empty")
 	}
 
-	// Tokenul emis trebuie să fie verificabil cu cheia publică a aceluiași issuer.
+	// The issued token must be verifiable with the same issuer's public key.
 	if _, err := Verify(iss.PublicKey(), resp.Token); err != nil {
-		t.Errorf("tokenul emis de handler nu trece verificarea: %v", err)
+		t.Errorf("the token issued by the handler doesn't pass verification: %v", err)
 	}
 }
 
@@ -79,12 +79,12 @@ func TestTokenHandler_RejectsWrongSecret(t *testing.T) {
 
 	rec := doTokenRequest(t, handler, map[string]any{
 		"agent_id": "agent-1",
-		"secret":   "secret-gresit",
+		"secret":   "wrong-secret",
 		"task_id":  "task-1",
 	})
 
 	if rec.Code != http.StatusUnauthorized {
-		t.Errorf("status = %d, vroiam 401", rec.Code)
+		t.Errorf("status = %d, want 401", rec.Code)
 	}
 }
 
@@ -95,13 +95,13 @@ func TestTokenHandler_RejectsScopeEscalation(t *testing.T) {
 
 	rec := doTokenRequest(t, handler, map[string]any{
 		"agent_id": "agent-1",
-		"secret":   "secret-corect",
+		"secret":   "correct-secret",
 		"task_id":  "task-1",
 		"scopes":   []string{"llm:openai:invoke", "admin:delete-everything"},
 	})
 
 	if rec.Code != http.StatusForbidden {
-		t.Errorf("status = %d, vroiam 403 (escaladare de privilegii respinsă), body=%s", rec.Code, rec.Body.String())
+		t.Errorf("status = %d, want 403 (privilege escalation rejected), body=%s", rec.Code, rec.Body.String())
 	}
 }
 
@@ -113,7 +113,7 @@ func TestTokenHandler_RejectsMissingFields(t *testing.T) {
 	rec := doTokenRequest(t, handler, map[string]any{"agent_id": "agent-1"})
 
 	if rec.Code != http.StatusBadRequest {
-		t.Errorf("status = %d, vroiam 400", rec.Code)
+		t.Errorf("status = %d, want 400", rec.Code)
 	}
 }
 
@@ -127,23 +127,23 @@ func TestTokenHandler_RejectsNonPOST(t *testing.T) {
 	handler(rec, req)
 
 	if rec.Code != http.StatusMethodNotAllowed {
-		t.Errorf("status = %d, vroiam 405", rec.Code)
+		t.Errorf("status = %d, want 405", rec.Code)
 	}
 }
 
 func TestTokenHandler_RejectsSuspendedAgent(t *testing.T) {
 	reg := newTestRegistry(t)
 	iss := newTestIssuer(t, "nexus.trust")
-	suspension := fakeSuspensionChecker{suspendedAgents: map[string]string{"agent-1": "comportament anormal"}}
+	suspension := fakeSuspensionChecker{suspendedAgents: map[string]string{"agent-1": "abnormal behavior"}}
 	handler := TokenHandler(reg, iss, suspension)
 
 	rec := doTokenRequest(t, handler, map[string]any{
 		"agent_id": "agent-1",
-		"secret":   "secret-corect",
+		"secret":   "correct-secret",
 		"task_id":  "task-1",
 	})
 
 	if rec.Code != http.StatusForbidden {
-		t.Errorf("status = %d, vroiam 403 pentru un agent suspendat", rec.Code)
+		t.Errorf("status = %d, want 403 for a suspended agent", rec.Code)
 	}
 }

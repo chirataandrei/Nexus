@@ -1,16 +1,16 @@
-// Package nexussdk este SDK-ul client oficial pentru Nexus Trust
-// Protocol. Este un modul Go separat, fără nicio dependență de codul
-// serverului gateway — orice echipă poate să-l adauge într-un agent
-// existent în câteva linii de cod, fără să cunoască intern cum
-// funcționează Nexus.
+// Package nexussdk is the official client SDK for Nexus Trust
+// Protocol. It's a separate Go module with no dependency on the
+// gateway server's code — any team can add it to an existing agent in
+// a few lines of code, without needing to know how Nexus works
+// internally.
 //
-// Ce face: gestionează automat "bootstrap-ul" de identitate (schimbul
-// secretului pe un JWT-SVID efemer), pune token-ul în cache, îl
-// reîmprospătează singur înainte să expire și îl atașează pe fiecare
-// cerere HTTP — fie direct (Client.Do), fie ca un *http.Client drop-in
-// (Client.HTTPClient) care poate înlocui transportul HTTP al oricărui
-// SDK existent (ex. clientul oficial OpenAI/Anthropic) fără alte
-// modificări de cod.
+// What it does: it automatically handles identity "bootstrap"
+// (exchanging the secret for an ephemeral JWT-SVID), caches the token,
+// refreshes it on its own before it expires, and attaches it to every
+// HTTP request — either directly (Client.Do), or as a drop-in
+// *http.Client (Client.HTTPClient) that can replace the HTTP transport
+// of any existing SDK (e.g. the official OpenAI/Anthropic client) with
+// no other code changes.
 package nexussdk
 
 import (
@@ -25,13 +25,13 @@ import (
 	"time"
 )
 
-// defaultRefreshSkew este marja de siguranță cu care un token este
-// considerat "pe cale să expire" și reîmprospătat din timp, ca nicio
-// cerere reală să nu rateze din cauza unei expirări chiar în timpul ei.
+// defaultRefreshSkew is the safety margin within which a token is
+// considered "about to expire" and refreshed ahead of time, so no real
+// request ever fails because of an expiration happening mid-request.
 const defaultRefreshSkew = 30 * time.Second
 
-// Client este clientul Nexus: o singură instanță per (agent, sarcină).
-// Este sigur pentru utilizare concurentă.
+// Client is the Nexus client: one instance per (agent, task). It's safe
+// for concurrent use.
 type Client struct {
 	baseURL    string
 	agentID    string
@@ -46,11 +46,11 @@ type Client struct {
 	expiresAt time.Time
 }
 
-// Option configurează un Client opțional, la construcție.
+// Option configures an optional Client setting at construction time.
 type Option func(*Client)
 
-// WithHTTPClient setează clientul HTTP de bază folosit pentru a vorbi cu
-// Nexus și cu upstream-urile. Implicit: http.DefaultClient.
+// WithHTTPClient sets the base HTTP client used to talk to Nexus and to
+// the upstreams. Defaults to http.DefaultClient.
 func WithHTTPClient(c *http.Client) Option {
 	return func(cl *Client) {
 		if c != nil {
@@ -59,26 +59,26 @@ func WithHTTPClient(c *http.Client) Option {
 	}
 }
 
-// WithScopes cere explicit un subset de scope-uri la emiterea tokenului
-// (trebuie să fie un subset din allowed_scopes al agentului în registrul
-// Nexus — altfel cererea de token este respinsă). Dacă nu este setat,
-// agentul primește toate scope-urile lui permise.
+// WithScopes explicitly requests a subset of scopes when issuing the
+// token (must be a subset of the agent's allowed_scopes in the Nexus
+// registry — otherwise the token request is rejected). If not set, the
+// agent gets all of its allowed scopes.
 func WithScopes(scopes ...string) Option {
 	return func(cl *Client) { cl.scopes = scopes }
 }
 
-// WithTTL cere un TTL specific pentru tokenurile emise (limitat în
-// continuare de politica serverului). Dacă nu este setat, se folosește
-// implicitul serverului (de regulă 5 minute).
+// WithTTL requests a specific TTL for issued tokens (still capped by
+// the server's policy). If not set, the server's default is used
+// (typically 5 minutes).
 func WithTTL(d time.Duration) Option {
 	return func(cl *Client) { cl.ttl = d }
 }
 
-// New construiește un Client Nexus. baseURL este adresa gateway-ului
-// (ex. "https://nexus.compania-ta.com"), agentID/secret sunt cele
-// înregistrate de un administrator în registrul de agenți Nexus, iar
-// taskID identifică sarcina curentă a agentului (un JWT-SVID Nexus este
-// legat strict de o singură sarcină).
+// New builds a Nexus Client. baseURL is the gateway's address (e.g.
+// "https://nexus.your-company.com"), agentID/secret are the ones an
+// administrator registered in Nexus's agent registry, and taskID
+// identifies the agent's current task (a Nexus JWT-SVID is strictly
+// tied to a single task).
 func New(baseURL, agentID, secret, taskID string, opts ...Option) *Client {
 	c := &Client{
 		baseURL:    strings.TrimRight(baseURL, "/"),
@@ -93,10 +93,10 @@ func New(baseURL, agentID, secret, taskID string, opts ...Option) *Client {
 	return c
 }
 
-// tokenRequest/tokenResponse oglindesc forma JSON a endpoint-ului
-// POST /nexus/identity/token al gateway-ului. SDK-ul nu importă pachetul
-// serverului — doar cunoaște protocolul de pe fir, exact cum ar face
-// orice client HTTP independent.
+// tokenRequest/tokenResponse mirror the JSON shape of the gateway's
+// POST /nexus/identity/token endpoint. The SDK doesn't import the
+// server's package — it just knows the wire protocol, exactly like any
+// independent HTTP client would.
 type tokenRequest struct {
 	AgentID    string   `json:"agent_id"`
 	Secret     string   `json:"secret"`
@@ -113,11 +113,11 @@ type tokenResponse struct {
 	ExpiresAt int64    `json:"expires_at"`
 }
 
-// Token returnează un JWT-SVID valid, reîmprospătându-l automat dacă
-// este absent sau pe cale să expire. De regulă nu trebuie apelat direct
-// — Do și HTTPClient îl folosesc intern — dar este expus pentru cazurile
-// în care un apelant are nevoie de token-ul brut (ex. pentru un alt
-// transport decât net/http).
+// Token returns a valid JWT-SVID, automatically refreshing it if it's
+// missing or about to expire. You normally don't need to call this
+// directly — Do and HTTPClient use it internally — but it's exported
+// for cases where a caller needs the raw token (e.g. for a transport
+// other than net/http).
 func (c *Client) Token(ctx context.Context) (string, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -138,32 +138,32 @@ func (c *Client) refreshLocked(ctx context.Context) (string, error) {
 	}
 	raw, err := json.Marshal(reqBody)
 	if err != nil {
-		return "", fmt.Errorf("nexussdk: nu pot serializa cererea de token: %w", err)
+		return "", fmt.Errorf("nexussdk: cannot serialize token request: %w", err)
 	}
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/nexus/identity/token", bytes.NewReader(raw))
 	if err != nil {
-		return "", fmt.Errorf("nexussdk: nu pot construi cererea de token: %w", err)
+		return "", fmt.Errorf("nexussdk: cannot build token request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
-		return "", fmt.Errorf("nexussdk: cererea de token către %s a eșuat: %w", c.baseURL, err)
+		return "", fmt.Errorf("nexussdk: token request to %s failed: %w", c.baseURL, err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return "", fmt.Errorf("nexussdk: gateway-ul a respins cererea de token (status %d): %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return "", fmt.Errorf("nexussdk: the gateway rejected the token request (status %d): %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 
 	var tr tokenResponse
 	if err := json.NewDecoder(resp.Body).Decode(&tr); err != nil {
-		return "", fmt.Errorf("nexussdk: răspuns invalid de la /nexus/identity/token: %w", err)
+		return "", fmt.Errorf("nexussdk: invalid response from /nexus/identity/token: %w", err)
 	}
 	if tr.Token == "" {
-		return "", fmt.Errorf("nexussdk: gateway-ul a răspuns fără token")
+		return "", fmt.Errorf("nexussdk: the gateway responded without a token")
 	}
 
 	c.token = tr.Token
@@ -171,9 +171,10 @@ func (c *Client) refreshLocked(ctx context.Context) (string, error) {
 	return c.token, nil
 }
 
-// Do execută o cerere HTTP prin Nexus, atașând automat un JWT-SVID valid
-// pe antetul Authorization. req.URL ar trebui să țintească gateway-ul
-// Nexus (ex. baseURL + "/v1/openai/..."), nu upstream-ul direct.
+// Do executes an HTTP request through Nexus, automatically attaching a
+// valid JWT-SVID to the Authorization header. req.URL should target the
+// Nexus gateway (e.g. baseURL + "/v1/openai/..."), not the upstream
+// directly.
 func (c *Client) Do(req *http.Request) (*http.Response, error) {
 	token, err := c.Token(req.Context())
 	if err != nil {
@@ -183,11 +184,12 @@ func (c *Client) Do(req *http.Request) (*http.Response, error) {
 	return c.httpClient.Do(req)
 }
 
-// HTTPClient returnează un *http.Client complet — drop-in replacement —
-// care atașează și reîmprospătează automat tokenul Nexus pe orice cerere
-// trimisă prin el. Util pentru a "conecta" Nexus la un SDK existent care
-// acceptă un *http.Client/http.RoundTripper personalizat (ex. clientul
-// oficial OpenAI: openai.NewClient(option.WithHTTPClient(nexusClient.HTTPClient()))).
+// HTTPClient returns a full *http.Client — a drop-in replacement —
+// that automatically attaches and refreshes the Nexus token on every
+// request sent through it. Useful for "plugging" Nexus into an
+// existing SDK that accepts a custom *http.Client/http.RoundTripper
+// (e.g. the official OpenAI client:
+// openai.NewClient(option.WithHTTPClient(nexusClient.HTTPClient()))).
 func (c *Client) HTTPClient() *http.Client {
 	base := c.httpClient.Transport
 	if base == nil {
@@ -209,8 +211,8 @@ func (t *authTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Clonăm cererea înainte de a modifica anteturile — un RoundTripper nu
-	// ar trebui să mute cererea originală a apelantului.
+	// Clone the request before modifying headers — a RoundTripper
+	// shouldn't mutate the caller's original request.
 	cloned := req.Clone(req.Context())
 	cloned.Header.Set("Authorization", "Bearer "+token)
 	return t.base.RoundTrip(cloned)

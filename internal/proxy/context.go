@@ -1,8 +1,9 @@
-// context.go propagă parser.RequestMeta prin context.Context al cererii
-// interne trimise upstream-ului, astfel încât ModifyResponse (care primește
-// doar *http.Response, fără acces direct la variabilele locale din
-// buildHandler) poate recupera metadatele cererii curente pentru a apela
-// SpendRecorder cu informația corectă despre agent/sarcină.
+// context.go propagates parser.RequestMeta through the context.Context
+// of the internal request sent to the upstream, so that ModifyResponse
+// (which only receives *http.Response, with no direct access to
+// buildHandler's local variables) can retrieve the current request's
+// metadata to call SpendRecorder with the correct agent/task
+// information.
 package proxy
 
 import (

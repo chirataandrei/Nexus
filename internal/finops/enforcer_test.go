@@ -11,45 +11,45 @@ func TestEnforcer_AllowsWithoutVerifiedIdentity(t *testing.T) {
 	policies := newTestPolicyRegistry(t)
 	e := NewEnforcer(policies, NewLedger())
 
-	meta := &parser.RequestMeta{} // fără VerifiedAgentID (ex. NoopValidator)
+	meta := &parser.RequestMeta{} // no VerifiedAgentID (e.g. NoopValidator)
 	if err := e.Authorize(context.Background(), meta); err != nil {
-		t.Errorf("fără identitate verificată, Enforcer nu ar trebui să blocheze: %v", err)
+		t.Errorf("without a verified identity, Enforcer should not block: %v", err)
 	}
 }
 
 func TestEnforcer_BlocksAfterBudgetExceeded(t *testing.T) {
-	policies := newTestPolicyRegistry(t) // agent-1: $5.0/zi
+	policies := newTestPolicyRegistry(t) // agent-1: $5.0/day
 	ledger := NewLedger()
 	e := NewEnforcer(policies, ledger)
 
 	meta := &parser.RequestMeta{VerifiedAgentID: "agent-1", VerifiedTaskID: "task-1"}
 
 	if err := e.Authorize(context.Background(), meta); err != nil {
-		t.Fatalf("prima cerere ar trebui permisă: %v", err)
+		t.Fatalf("the first request should be allowed: %v", err)
 	}
 
-	ledger.RecordSpend("agent-1", "task-1", 1000, 5.0) // exact bugetul
+	ledger.RecordSpend("agent-1", "task-1", 1000, 5.0) // exactly the budget
 
 	if err := e.Authorize(context.Background(), meta); err == nil {
-		t.Error("Enforcer ar trebui să blocheze după ce bugetul zilnic e epuizat")
+		t.Error("Enforcer should block once the daily budget is exhausted")
 	}
 }
 
 func TestEnforcer_UsesPerAgentPolicyNotGlobalDefault(t *testing.T) {
-	policies := newTestPolicyRegistry(t) // default: $1.0/zi, agent-1: $5.0/zi
+	policies := newTestPolicyRegistry(t) // default: $1.0/day, agent-1: $5.0/day
 	ledger := NewLedger()
 	e := NewEnforcer(policies, ledger)
 
-	ledger.RecordSpend("agent-1", "task-1", 1000, 2.0) // peste default-ul de $1, sub cei $5 ai agent-1
+	ledger.RecordSpend("agent-1", "task-1", 1000, 2.0) // above the $1 default, below agent-1's $5
 
 	meta := &parser.RequestMeta{VerifiedAgentID: "agent-1", VerifiedTaskID: "task-1"}
 	if err := e.Authorize(context.Background(), meta); err != nil {
-		t.Errorf("agent-1 are politică proprie de $5, nu ar trebui blocat la $2 cheltuiți: %v", err)
+		t.Errorf("agent-1 has its own $5 policy, shouldn't be blocked at $2 spent: %v", err)
 	}
 
-	otherMeta := &parser.RequestMeta{VerifiedAgentID: "agent-fara-politica", VerifiedTaskID: "task-1"}
-	ledger.RecordSpend("agent-fara-politica", "task-1", 1000, 1.0) // egal cu default-ul de $1
+	otherMeta := &parser.RequestMeta{VerifiedAgentID: "agent-without-policy", VerifiedTaskID: "task-1"}
+	ledger.RecordSpend("agent-without-policy", "task-1", 1000, 1.0) // equal to the $1 default
 	if err := e.Authorize(context.Background(), otherMeta); err == nil {
-		t.Error("un agent fără politică proprie ar trebui să folosească implicitul de $1 și să fie blocat")
+		t.Error("an agent without its own policy should use the $1 default and be blocked")
 	}
 }

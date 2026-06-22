@@ -1,9 +1,9 @@
-// suspension.go implementează kill-switch-ul Nexus: un registru în
-// memorie al agenților suspendați de un operator uman. Este verificat pe
-// fiecare validare de identitate (internal/identity.SPIFFEValidator) și
-// pe fiecare cerere de token nou — astfel o suspendare are efect
-// instantaneu și global, fără a necesita restart sau a aștepta
-// expirarea tokenurilor deja emise (Articolul 14 — supervizare umană).
+// suspension.go implements Nexus's kill switch: an in-memory registry
+// of agents suspended by a human operator. It's checked on every
+// identity validation (internal/identity.SPIFFEValidator) and on every
+// new token request — so a suspension takes effect instantly and
+// globally, with no need for a restart or to wait for already-issued
+// tokens to expire (Article 14 — human oversight).
 package compliance
 
 import (
@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-// SuspensionRecord descrie o suspendare activă.
+// SuspensionRecord describes an active suspension.
 type SuspensionRecord struct {
 	AgentID     string    `json:"agent_id"`
 	Reason      string    `json:"reason"`
@@ -19,22 +19,22 @@ type SuspensionRecord struct {
 	SuspendedAt time.Time `json:"suspended_at"`
 }
 
-// SuspensionRegistry este kill-switch-ul: un set, sigur pentru acces
-// concurent, de agenți suspendați. Implementează implicit
-// identity.SuspensionChecker (IsSuspended) prin duck-typing, fără ca
-// acest pachet să importe internal/identity.
+// SuspensionRegistry is the kill switch: a set, safe for concurrent
+// access, of suspended agents. It implicitly implements
+// identity.SuspensionChecker (IsSuspended) through duck typing, without
+// this package importing internal/identity.
 type SuspensionRegistry struct {
 	mu        sync.RWMutex
 	suspended map[string]SuspensionRecord
 }
 
-// NewSuspensionRegistry construiește un registru gol (niciun agent suspendat).
+// NewSuspensionRegistry builds an empty registry (no agent suspended).
 func NewSuspensionRegistry() *SuspensionRegistry {
 	return &SuspensionRegistry{suspended: make(map[string]SuspensionRecord)}
 }
 
-// Suspend marchează un agent ca suspendat. Apelurile repetate pentru
-// același agent actualizează motivul/operatorul/timestamp-ul.
+// Suspend marks an agent as suspended. Repeated calls for the same
+// agent update the reason/operator/timestamp.
 func (r *SuspensionRegistry) Suspend(agentID, reason, operator string) SuspensionRecord {
 	rec := SuspensionRecord{
 		AgentID:     agentID,
@@ -48,8 +48,8 @@ func (r *SuspensionRegistry) Suspend(agentID, reason, operator string) Suspensio
 	return rec
 }
 
-// Resume ridică suspendarea unui agent. Returnează false dacă agentul nu
-// era suspendat (operațiune fără efect, dar nu o eroare).
+// Resume lifts an agent's suspension. Returns false if the agent wasn't
+// suspended (a no-op, not an error).
 func (r *SuspensionRegistry) Resume(agentID string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -60,7 +60,7 @@ func (r *SuspensionRegistry) Resume(agentID string) bool {
 	return true
 }
 
-// IsSuspended implementează identity.SuspensionChecker.
+// IsSuspended implements identity.SuspensionChecker.
 func (r *SuspensionRegistry) IsSuspended(agentID string) (bool, string) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -71,7 +71,7 @@ func (r *SuspensionRegistry) IsSuspended(agentID string) (bool, string) {
 	return true, rec.Reason
 }
 
-// List returnează toate suspendările active curent.
+// List returns every currently active suspension.
 func (r *SuspensionRegistry) List() []SuspensionRecord {
 	r.mu.RLock()
 	defer r.mu.RUnlock()

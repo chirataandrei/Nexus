@@ -1,8 +1,8 @@
-// control_handler.go expune API-ul administrativ "kill-switch" (Articolul
-// 14 — supervizare umană) și un endpoint de verificare a integrității
-// lanțului de conformitate. Orice acțiune de suspendare/reluare este, la
-// rândul ei, scrisă în lanțul WORM — un operator nu poate suspenda un
-// agent "pe tăcute": gestul însuși devine o înregistrare permanentă.
+// control_handler.go exposes the "kill switch" admin API (Article 14 —
+// human oversight) and an endpoint to verify the compliance chain's
+// integrity. Every suspend/resume action is, in turn, written to the
+// WORM chain — an operator can't suspend an agent "quietly": the
+// action itself becomes a permanent record.
 package compliance
 
 import (
@@ -25,20 +25,20 @@ type resumeRequest struct {
 	Operator string `json:"operator,omitempty"`
 }
 
-// SuspendHandler expune POST /nexus/control/suspend.
+// SuspendHandler exposes POST /nexus/control/suspend.
 func SuspendHandler(registry *SuspensionRegistry, chain *Chain) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
-			http.Error(w, "metodă neacceptată, folosiți POST", http.StatusMethodNotAllowed)
+			http.Error(w, "method not allowed, use POST", http.StatusMethodNotAllowed)
 			return
 		}
 		var req suspendRequest
 		if err := json.NewDecoder(io.LimitReader(r.Body, maxControlRequestBytes)).Decode(&req); err != nil {
-			http.Error(w, "corp JSON invalid", http.StatusBadRequest)
+			http.Error(w, "invalid JSON body", http.StatusBadRequest)
 			return
 		}
 		if req.AgentID == "" || req.Reason == "" {
-			http.Error(w, "agent_id și reason sunt obligatorii", http.StatusBadRequest)
+			http.Error(w, "agent_id and reason are required", http.StatusBadRequest)
 			return
 		}
 
@@ -66,20 +66,20 @@ func SuspendHandler(registry *SuspensionRegistry, chain *Chain) http.HandlerFunc
 	}
 }
 
-// ResumeHandler expune POST /nexus/control/resume.
+// ResumeHandler exposes POST /nexus/control/resume.
 func ResumeHandler(registry *SuspensionRegistry, chain *Chain) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
-			http.Error(w, "metodă neacceptată, folosiți POST", http.StatusMethodNotAllowed)
+			http.Error(w, "method not allowed, use POST", http.StatusMethodNotAllowed)
 			return
 		}
 		var req resumeRequest
 		if err := json.NewDecoder(io.LimitReader(r.Body, maxControlRequestBytes)).Decode(&req); err != nil {
-			http.Error(w, "corp JSON invalid", http.StatusBadRequest)
+			http.Error(w, "invalid JSON body", http.StatusBadRequest)
 			return
 		}
 		if req.AgentID == "" {
-			http.Error(w, "agent_id este obligatoriu", http.StatusBadRequest)
+			http.Error(w, "agent_id is required", http.StatusBadRequest)
 			return
 		}
 
@@ -101,11 +101,11 @@ func ResumeHandler(registry *SuspensionRegistry, chain *Chain) http.HandlerFunc 
 	}
 }
 
-// SuspendedListHandler expune GET /nexus/control/suspended.
+// SuspendedListHandler exposes GET /nexus/control/suspended.
 func SuspendedListHandler(registry *SuspensionRegistry) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
-			http.Error(w, "metodă neacceptată, folosiți GET", http.StatusMethodNotAllowed)
+			http.Error(w, "method not allowed, use GET", http.StatusMethodNotAllowed)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -113,13 +113,13 @@ func SuspendedListHandler(registry *SuspensionRegistry) http.HandlerFunc {
 	}
 }
 
-// VerifyHandler expune GET /nexus/compliance/verify: rulează VerifyChain
-// la cerere, ca un auditor să poată confirma în orice moment că lanțul
-// de conformitate nu a fost modificat retroactiv.
+// VerifyHandler exposes GET /nexus/compliance/verify: it runs
+// VerifyChain on demand, so an auditor can confirm at any time that the
+// compliance chain hasn't been retroactively modified.
 func VerifyHandler(path string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
-			http.Error(w, "metodă neacceptată, folosiți GET", http.StatusMethodNotAllowed)
+			http.Error(w, "method not allowed, use GET", http.StatusMethodNotAllowed)
 			return
 		}
 		n, err := VerifyChain(path)

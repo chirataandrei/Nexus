@@ -1,13 +1,13 @@
-// Package identity implementează AIMS (Agent Identity Management System) —
-// motorul de identitate non-umană al Nexus Trust Protocol, inspirat de
-// standardele IETF WIMSE și SPIFFE. Scopul lui este să elimine cheile API
-// statice: un agent primește, în locul unei parole, o identitate
-// criptografică efemeră (JWT-SVID) emisă de Nexus, valabilă câteva minute
-// și limitată strict la un anumit set de scope-uri/instrumente.
+// Package identity implements AIMS (Agent Identity Management System) —
+// Nexus Trust Protocol's non-human identity engine, inspired by the
+// IETF WIMSE and SPIFFE standards. Its goal is to eliminate static API
+// keys: instead of a password, an agent gets an ephemeral cryptographic
+// identity (JWT-SVID) issued by Nexus, valid for a few minutes and
+// strictly scoped to a specific set of tools/permissions.
 //
-// jwtsvid.go conține formatul minim de token folosit: un JWT semnat
-// Ed25519, construit doar cu biblioteca standard (fără dependențe externe
-// de tip JOSE/JWT), pentru a păstra gateway-ul ușor de compilat și auditat.
+// jwtsvid.go contains the minimal token format used: an Ed25519-signed
+// JWT, built with only the standard library (no external JOSE/JWT
+// dependencies), to keep the gateway easy to build and audit.
 package identity
 
 import (
@@ -20,23 +20,24 @@ import (
 	"time"
 )
 
-// Algorithm și TokenType identifică formatul tokenului în antetul JWT.
-// "JWT-SVID" marchează explicit că acesta este un SVID (SPIFFE Verifiable
-// Identity Document) sub formă de JWT, nu un JWT generic de aplicație.
+// Algorithm and TokenType identify the token's format in the JWT
+// header. "JWT-SVID" explicitly marks this as an SVID (SPIFFE
+// Verifiable Identity Document) in JWT form, not a generic application
+// JWT.
 const (
 	Algorithm = "EdDSA"
 	TokenType = "JWT-SVID"
 )
 
-// header este antetul standard JWT.
+// header is the standard JWT header.
 type header struct {
 	Alg string `json:"alg"`
 	Typ string `json:"typ"`
 }
 
-// Claims reprezintă conținutul unui JWT-SVID emis de Nexus pentru un
-// agent IA, pentru o sarcină (task) anume, cu un set explicit de
-// scope-uri (drepturi de utilizare a instrumentelor/upstream-urilor).
+// Claims represents the contents of a JWT-SVID issued by Nexus for an
+// AI agent, for a specific task, with an explicit set of scopes
+// (permissions to use tools/upstreams).
 type Claims struct {
 	Issuer    string `json:"iss"`
 	Subject   string `json:"sub"` // SPIFFE ID: spiffe://<trust-domain>/agent/<agent-id>/task/<task-id>
@@ -45,35 +46,36 @@ type Claims struct {
 	NotBefore int64  `json:"nbf"`
 	JTI       string `json:"jti"`
 
-	// AgentID și TaskID sunt extrase explicit (în plus față de Subject)
-	// pentru a fi citite direct de validator și de jurnalizare, fără a
-	// re-parsa SPIFFE ID-ul de fiecare dată.
+	// AgentID and TaskID are extracted explicitly (in addition to
+	// Subject) so the validator and logging can read them directly,
+	// without re-parsing the SPIFFE ID every time.
 	AgentID string `json:"nexus_agent_id"`
 	TaskID  string `json:"nexus_task_id"`
-	// Scopes este lista strictă de drepturi acordate acestui token —
-	// ex. ["llm:openai:invoke"]. Un token fără un scope nu poate accesa
-	// ruta care îl cere, indiferent de identitatea agentului.
+	// Scopes is the strict list of permissions granted to this token —
+	// e.g. ["llm:openai:invoke"]. A token without a given scope cannot
+	// access the route that requires it, regardless of the agent's
+	// identity.
 	Scopes []string `json:"nexus_scopes"`
 }
 
-// ExpiresAtTime și IssuedAtTime sunt utilitare de conveniență pentru cod
-// și teste, evitând conversii repetate din Unix timestamp.
+// ExpiresAtTime and IssuedAtTime are convenience helpers for code and
+// tests, avoiding repeated Unix timestamp conversions.
 func (c Claims) ExpiresAtTime() time.Time { return time.Unix(c.ExpiresAt, 0).UTC() }
 func (c Claims) IssuedAtTime() time.Time  { return time.Unix(c.IssuedAt, 0).UTC() }
 
-// Sign produce un JWT-SVID semnat Ed25519 pentru claims-urile date.
+// Sign produces an Ed25519-signed JWT-SVID for the given claims.
 func Sign(priv ed25519.PrivateKey, claims Claims) (string, error) {
 	if len(priv) != ed25519.PrivateKeySize {
-		return "", errors.New("jwtsvid: cheie privată Ed25519 invalidă")
+		return "", errors.New("jwtsvid: invalid Ed25519 private key")
 	}
 
 	headerJSON, err := json.Marshal(header{Alg: Algorithm, Typ: TokenType})
 	if err != nil {
-		return "", fmt.Errorf("jwtsvid: nu pot serializa antetul: %w", err)
+		return "", fmt.Errorf("jwtsvid: cannot serialize header: %w", err)
 	}
 	claimsJSON, err := json.Marshal(claims)
 	if err != nil {
-		return "", fmt.Errorf("jwtsvid: nu pot serializa claims: %w", err)
+		return "", fmt.Errorf("jwtsvid: cannot serialize claims: %w", err)
 	}
 
 	headerB64 := base64.RawURLEncoding.EncodeToString(headerJSON)
@@ -86,54 +88,54 @@ func Sign(priv ed25519.PrivateKey, claims Claims) (string, error) {
 	return signingInput + "." + sigB64, nil
 }
 
-// Verify validează semnătura criptografică a unui JWT-SVID și expirarea
-// lui (exp/nbf). Nu validează domeniul de încredere sau scope-urile —
-// acestea sunt responsabilitatea apelantului (de regulă, SPIFFEValidator),
-// care are context despre ruta cerută.
+// Verify validates a JWT-SVID's cryptographic signature and its
+// expiration (exp/nbf). It does not validate the trust domain or
+// scopes — that's the caller's responsibility (typically
+// SPIFFEValidator), which has context about the route being requested.
 func Verify(pub ed25519.PublicKey, token string) (Claims, error) {
 	var claims Claims
 
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 {
-		return claims, errors.New("jwtsvid: format token invalid (se așteaptă header.claims.semnătură)")
+		return claims, errors.New("jwtsvid: invalid token format (expected header.claims.signature)")
 	}
 	headerB64, claimsB64, sigB64 := parts[0], parts[1], parts[2]
 
 	headerJSON, err := base64.RawURLEncoding.DecodeString(headerB64)
 	if err != nil {
-		return claims, fmt.Errorf("jwtsvid: antet invalid base64: %w", err)
+		return claims, fmt.Errorf("jwtsvid: invalid base64 header: %w", err)
 	}
 	var hdr header
 	if err := json.Unmarshal(headerJSON, &hdr); err != nil {
-		return claims, fmt.Errorf("jwtsvid: antet JSON invalid: %w", err)
+		return claims, fmt.Errorf("jwtsvid: invalid JSON header: %w", err)
 	}
 	if hdr.Alg != Algorithm {
-		return claims, fmt.Errorf("jwtsvid: algoritm necunoscut sau nepermis: %q", hdr.Alg)
+		return claims, fmt.Errorf("jwtsvid: unknown or disallowed algorithm: %q", hdr.Alg)
 	}
 
 	signature, err := base64.RawURLEncoding.DecodeString(sigB64)
 	if err != nil {
-		return claims, fmt.Errorf("jwtsvid: semnătură invalidă base64: %w", err)
+		return claims, fmt.Errorf("jwtsvid: invalid base64 signature: %w", err)
 	}
 	signingInput := headerB64 + "." + claimsB64
 	if !ed25519.Verify(pub, []byte(signingInput), signature) {
-		return claims, errors.New("jwtsvid: semnătură invalidă — token falsificat sau emis de altă autoritate")
+		return claims, errors.New("jwtsvid: invalid signature — token forged or issued by a different authority")
 	}
 
 	claimsJSON, err := base64.RawURLEncoding.DecodeString(claimsB64)
 	if err != nil {
-		return claims, fmt.Errorf("jwtsvid: claims invalide base64: %w", err)
+		return claims, fmt.Errorf("jwtsvid: invalid base64 claims: %w", err)
 	}
 	if err := json.Unmarshal(claimsJSON, &claims); err != nil {
-		return claims, fmt.Errorf("jwtsvid: claims JSON invalide: %w", err)
+		return claims, fmt.Errorf("jwtsvid: invalid JSON claims: %w", err)
 	}
 
 	now := time.Now().Unix()
 	if claims.ExpiresAt != 0 && now >= claims.ExpiresAt {
-		return claims, errors.New("jwtsvid: token expirat")
+		return claims, errors.New("jwtsvid: token expired")
 	}
 	if claims.NotBefore != 0 && now < claims.NotBefore {
-		return claims, errors.New("jwtsvid: token nu este încă valid (nbf în viitor)")
+		return claims, errors.New("jwtsvid: token not yet valid (nbf is in the future)")
 	}
 
 	return claims, nil

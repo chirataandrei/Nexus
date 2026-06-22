@@ -1,9 +1,9 @@
-// registry.go conține registrul agenților IA cunoscuți de Nexus —
-// echivalentul unei liste de "workload-uri" autorizate să facă "bootstrap"
-// (schimbul inițial al unui secret pre-distribuit pentru un JWT-SVID
-// efemer). Într-o implementare SPIFFE completă, acest pas ar fi înlocuit
-// de attestation la nivel de platformă (k8s, TPM etc.); aici folosim un
-// secret de bootstrap simplu, stocat doar ca hash SHA-256.
+// registry.go contains Nexus's registry of known AI agents — the
+// equivalent of a list of "workloads" authorized to "bootstrap" (the
+// initial exchange of a pre-distributed secret for an ephemeral
+// JWT-SVID). In a full SPIFFE deployment, this step would be replaced
+// by platform-level attestation (k8s, TPM, etc.); here we use a simple
+// bootstrap secret, stored only as a SHA-256 hash.
 package identity
 
 import (
@@ -16,25 +16,25 @@ import (
 	"time"
 )
 
-// AgentRecord descrie un agent IA înregistrat în Nexus: identitatea lui,
-// hash-ul secretului de bootstrap și scope-urile maxime pe care le poate
-// cere vreodată (orice cerere peste acest set este respinsă — aceasta
-// este bariera anti-escaladare de privilegii).
+// AgentRecord describes an AI agent registered with Nexus: its
+// identity, its bootstrap secret hash, and the maximum scopes it can
+// ever request (any request beyond this set is rejected — this is the
+// privilege-escalation barrier).
 type AgentRecord struct {
 	AgentID string `json:"agent_id"`
-	// SecretHash este sha256("<agent_id>:<secret>") în hex — niciodată
-	// secretul în clar. Generează-l cu cmd/nexus-agentctl.
+	// SecretHash is sha256("<agent_id>:<secret>") in hex — never the
+	// secret in plaintext. Generate it with cmd/nexus-agentctl.
 	SecretHash string `json:"secret_hash"`
-	// AllowedScopes este plafonul absolut de drepturi al agentului.
+	// AllowedScopes is the agent's absolute permission ceiling.
 	AllowedScopes []string `json:"allowed_scopes"`
-	// MaxTTLSeconds, dacă setat, suprascrie TTL-ul maxim implicit al
-	// registrului pentru acest agent specific (ex. un agent cu drepturi
-	// mai sensibile poate primi tokenuri valabile doar 60s).
+	// MaxTTLSeconds, if set, overrides the registry's default max TTL
+	// for this specific agent (e.g. an agent with more sensitive
+	// permissions may only get tokens valid for 60s).
 	MaxTTLSeconds int `json:"max_ttl_seconds,omitempty"`
 }
 
-// MaxTTL returnează durata maximă de viață permisă pentru un token al
-// acestui agent, folosind fallback dacă agentul nu are o valoare proprie.
+// MaxTTL returns the maximum lifetime allowed for a token belonging to
+// this agent, falling back if the agent has no value of its own.
 func (rec AgentRecord) MaxTTL(fallback time.Duration) time.Duration {
 	if rec.MaxTTLSeconds > 0 {
 		return time.Duration(rec.MaxTTLSeconds) * time.Second
@@ -42,10 +42,9 @@ func (rec AgentRecord) MaxTTL(fallback time.Duration) time.Duration {
 	return fallback
 }
 
-// EnsureScopesAllowed verifică că niciun scope cerut nu depășește
-// AllowedScopes — un agent nu poate obține niciodată, prin cererea de
-// token, mai multe drepturi decât i s-au alocat explicit de către un
-// administrator.
+// EnsureScopesAllowed checks that no requested scope exceeds
+// AllowedScopes — an agent can never obtain, through a token request,
+// more permissions than an administrator has explicitly granted it.
 func (rec AgentRecord) EnsureScopesAllowed(requested []string) error {
 	allowed := make(map[string]bool, len(rec.AllowedScopes))
 	for _, s := range rec.AllowedScopes {
@@ -54,7 +53,7 @@ func (rec AgentRecord) EnsureScopesAllowed(requested []string) error {
 	for _, s := range requested {
 		if !allowed[s] {
 			return fmt.Errorf(
-				"identity: scope %q nu este permis pentru agentul %q (posibilă escaladare de privilegii respinsă)",
+				"identity: scope %q is not allowed for agent %q (possible privilege escalation rejected)",
 				s, rec.AgentID,
 			)
 		}
@@ -62,30 +61,31 @@ func (rec AgentRecord) EnsureScopesAllowed(requested []string) error {
 	return nil
 }
 
-// agentsFile este formatul JSON de pe disc pentru registrul de agenți.
+// agentsFile is the on-disk JSON format for the agent registry.
 type agentsFile struct {
 	DefaultMaxTTLSeconds int           `json:"default_max_ttl_seconds,omitempty"`
 	Agents               []AgentRecord `json:"agents"`
 }
 
-// Registry ține în memorie agenții înregistrați și TTL-ul implicit maxim.
+// Registry holds the registered agents and the default max TTL in
+// memory.
 type Registry struct {
 	agents        map[string]AgentRecord
 	defaultMaxTTL time.Duration
 }
 
-// LoadRegistry citește un fișier JSON de pe disc și construiește
-// registrul de agenți. fallbackDefaultMaxTTL este folosit dacă fișierul
-// nu specifică default_max_ttl_seconds.
+// LoadRegistry reads a JSON file from disk and builds the agent
+// registry. fallbackDefaultMaxTTL is used if the file doesn't specify
+// default_max_ttl_seconds.
 func LoadRegistry(path string, fallbackDefaultMaxTTL time.Duration) (*Registry, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("identity: nu pot citi registrul de agenți %s: %w", path, err)
+		return nil, fmt.Errorf("identity: cannot read agent registry %s: %w", path, err)
 	}
 
 	var f agentsFile
 	if err := json.Unmarshal(raw, &f); err != nil {
-		return nil, fmt.Errorf("identity: JSON invalid în %s: %w", path, err)
+		return nil, fmt.Errorf("identity: invalid JSON in %s: %w", path, err)
 	}
 
 	reg := &Registry{
@@ -98,47 +98,47 @@ func LoadRegistry(path string, fallbackDefaultMaxTTL time.Duration) (*Registry, 
 
 	for _, a := range f.Agents {
 		if a.AgentID == "" || a.SecretHash == "" {
-			return nil, fmt.Errorf("identity: agent invalid (agent_id/secret_hash lipsă): %+v", a)
+			return nil, fmt.Errorf("identity: invalid agent (missing agent_id/secret_hash): %+v", a)
 		}
 		if _, dup := reg.agents[a.AgentID]; dup {
-			return nil, fmt.Errorf("identity: agent_id duplicat în registru: %s", a.AgentID)
+			return nil, fmt.Errorf("identity: duplicate agent_id in registry: %s", a.AgentID)
 		}
 		reg.agents[a.AgentID] = a
 	}
 
 	if len(reg.agents) == 0 {
-		return nil, fmt.Errorf("identity: registrul de agenți %s este gol", path)
+		return nil, fmt.Errorf("identity: agent registry %s is empty", path)
 	}
 	return reg, nil
 }
 
-// DefaultMaxTTL este TTL-ul maxim implicit al registrului (folosit pentru
-// agenții care nu definesc max_ttl_seconds propriu).
+// DefaultMaxTTL is the registry's default max TTL (used for agents that
+// don't define their own max_ttl_seconds).
 func (r *Registry) DefaultMaxTTL() time.Duration {
 	return r.defaultMaxTTL
 }
 
-// Authenticate verifică perechea (agentID, secret) împotriva registrului.
-// Comparația se face mereu prin hash + constant-time compare, inclusiv
-// pentru agenți inexistenți, ca să nu existe o diferență de timp
-// observabilă între "agent inexistent" și "secret greșit".
+// Authenticate checks the (agentID, secret) pair against the registry.
+// The comparison is always done via hash + constant-time compare, even
+// for nonexistent agents, so there's no observable timing difference
+// between "agent doesn't exist" and "wrong secret".
 func (r *Registry) Authenticate(agentID, secret string) (AgentRecord, error) {
 	rec, found := r.agents[agentID]
 
 	candidate := HashSecret(agentID, secret)
-	stored := rec.SecretHash // gol dacă agentul nu a fost găsit
+	stored := rec.SecretHash // empty if the agent wasn't found
 
 	match := subtle.ConstantTimeCompare([]byte(candidate), []byte(stored)) == 1
 
 	if !found || !match || stored == "" {
-		return AgentRecord{}, fmt.Errorf("identity: autentificare eșuată pentru agentul %q", agentID)
+		return AgentRecord{}, fmt.Errorf("identity: authentication failed for agent %q", agentID)
 	}
 	return rec, nil
 }
 
-// HashSecret calculează hash-ul folosit pentru stocarea secretelor de
-// bootstrap. Este expus public pentru a fi folosit de cmd/nexus-agentctl
-// la generarea de înregistrări noi în configs/agents.json.
+// HashSecret computes the hash used to store bootstrap secrets. It's
+// exported so cmd/nexus-agentctl can use it to generate new entries for
+// configs/agents.json.
 func HashSecret(agentID, secret string) string {
 	sum := sha256.Sum256([]byte(agentID + ":" + secret))
 	return hex.EncodeToString(sum[:])

@@ -1,6 +1,6 @@
-// Punctele de extensie pe care gateway-ul le expune: identitate, buget și
-// contorizarea cheltuielilor se conectează aici prin interfețe, nu prin
-// modificări ad-hoc ale buclei principale a proxy-ului.
+// The extension points the gateway exposes: identity, budget, and spend
+// tracking plug in here through interfaces, not through ad-hoc changes
+// to the proxy's main loop.
 package proxy
 
 import (
@@ -10,53 +10,53 @@ import (
 	"nexus-gateway/internal/parser"
 )
 
-// Validator decide dacă o cerere are dreptul să ajungă la upstream.
-// NoopValidator acceptă tot; identity.SPIFFEValidator o înlocuiește cu
-// validarea identității criptografice (JWT-SVID).
+// Validator decides whether a request is allowed to reach the upstream.
+// NoopValidator accepts everything; identity.SPIFFEValidator replaces it
+// with cryptographic identity validation (JWT-SVID).
 type Validator interface {
 	Validate(ctx context.Context, meta *parser.RequestMeta, r *http.Request) error
 }
 
-// BudgetEnforcer decide dacă o cerere se încadrează în politica de cost
-// alocată agentului/sarcinii, ÎNAINTE ca cererea să ajungă la upstream.
-// NoopBudgetEnforcer nu impune nicio limită; finops.Enforcer adaugă
-// "circuit breaking" real pe baza consumului de tokeni/cost per agent și
-// per sarcină.
+// BudgetEnforcer decides whether a request fits the cost policy
+// allocated to the agent/task, BEFORE the request reaches the upstream.
+// NoopBudgetEnforcer imposes no limit; finops.Enforcer adds real
+// "circuit breaking" based on token/cost consumption per agent and per
+// task.
 type BudgetEnforcer interface {
 	Authorize(ctx context.Context, meta *parser.RequestMeta) error
 }
 
-// SpendRecorder este apelat după ce s-a primit răspunsul de la upstream,
-// cu corpul răspunsului (de regulă JSON-ul unui model LLM, care conține
-// un câmp "usage" cu tokenii consumați). NoopSpendRecorder nu face nimic;
-// finops.Recorder extrage tokenii reali și actualizează ledger-ul de cost,
-// astfel încât *următoarea* cerere a agentului să fie evaluată corect de
-// BudgetEnforcer.
+// SpendRecorder is called after the response has been received from the
+// upstream, with the response body (typically an LLM's JSON, which
+// contains a "usage" field with the tokens consumed). NoopSpendRecorder
+// does nothing; finops.Recorder extracts the real token counts and
+// updates the cost ledger, so the agent's *next* request is evaluated
+// correctly by BudgetEnforcer.
 //
-// pricePerThousandTokensUSD este prețul configurat pentru upstream-ul
-// apelat (config.Upstream.PricePerThousandTokensUSD), transmis aici ca
-// să nu fie nevoie ca implementarea SpendRecorder să cunoască detalii de
-// configurare a gateway-ului.
+// pricePerThousandTokensUSD is the price configured for the upstream
+// being called (config.Upstream.PricePerThousandTokensUSD), passed in
+// here so the SpendRecorder implementation doesn't need to know
+// anything about the gateway's configuration.
 type SpendRecorder interface {
 	RecordSpend(ctx context.Context, meta *parser.RequestMeta, upstreamName string, pricePerThousandTokensUSD float64, responseBody []byte)
 }
 
-// NoopValidator nu respinge nimic — implicit cât nu e conectat un
-// validator real.
+// NoopValidator rejects nothing — the default while no real validator
+// is wired in.
 type NoopValidator struct{}
 
 func (NoopValidator) Validate(_ context.Context, _ *parser.RequestMeta, _ *http.Request) error {
 	return nil
 }
 
-// NoopBudgetEnforcer nu impune nicio limită de buget.
+// NoopBudgetEnforcer imposes no budget limit.
 type NoopBudgetEnforcer struct{}
 
 func (NoopBudgetEnforcer) Authorize(_ context.Context, _ *parser.RequestMeta) error {
 	return nil
 }
 
-// NoopSpendRecorder nu înregistrează niciun cost.
+// NoopSpendRecorder records no cost.
 type NoopSpendRecorder struct{}
 
 func (NoopSpendRecorder) RecordSpend(_ context.Context, _ *parser.RequestMeta, _ string, _ float64, _ []byte) {

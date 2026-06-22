@@ -1,8 +1,8 @@
-// issuer.go conține autoritatea de emitere a identităților din Nexus:
-// generează perechea de chei Ed25519 a gateway-ului (echivalentul unui
-// SPIRE Server minimalist, auto-conținut) și emite JWT-SVID-uri efemere
-// pentru agenți, strict legate de un agent_id, un task_id și un set de
-// scope-uri explicite.
+// issuer.go contains Nexus's identity-issuing authority: it generates
+// the gateway's Ed25519 key pair (the equivalent of a minimal,
+// self-contained SPIRE Server) and issues ephemeral JWT-SVIDs for
+// agents, strictly tied to an agent_id, a task_id, and an explicit set
+// of scopes.
 package identity
 
 import (
@@ -12,8 +12,8 @@ import (
 	"time"
 )
 
-// Issuer este autoritatea de identitate a unei instanțe Nexus pentru un
-// singur domeniu de încredere (trust domain) SPIFFE.
+// Issuer is the identity authority of a Nexus instance for a single
+// SPIFFE trust domain.
 type Issuer struct {
 	priv        ed25519.PrivateKey
 	pub         ed25519.PublicKey
@@ -21,18 +21,18 @@ type Issuer struct {
 	defaultTTL  time.Duration
 }
 
-// NewIssuer generează o pereche de chei Ed25519 nouă și construiește un
-// Issuer pentru domeniul de încredere dat.
+// NewIssuer generates a new Ed25519 key pair and builds an Issuer for
+// the given trust domain.
 //
-// Notă de securitate: cheia este generată în memorie la pornirea
-// procesului și nu este persistată — un restart al gateway-ului
-// invalidează implicit toate tokenurile emise anterior (acceptabil, dat
-// fiind TTL-ul de ordinul minutelor). Într-o implementare de producție,
-// această cheie ar fi gestionată de o autoritate dedicată (ex. SPIRE
-// Server) cu rotație și federare reală.
+// Security note: the key is generated in memory at process startup and
+// is not persisted — restarting the gateway implicitly invalidates all
+// previously issued tokens (acceptable given the TTL is on the order of
+// minutes). In a production deployment, this key would be managed by a
+// dedicated authority (e.g. a SPIRE Server) with real rotation and
+// federation.
 func NewIssuer(trustDomain string, defaultTTL time.Duration) (*Issuer, error) {
 	if trustDomain == "" {
-		return nil, fmt.Errorf("identity: trust_domain este obligatoriu")
+		return nil, fmt.Errorf("identity: trust_domain is required")
 	}
 	if defaultTTL <= 0 {
 		defaultTTL = 5 * time.Minute
@@ -40,29 +40,30 @@ func NewIssuer(trustDomain string, defaultTTL time.Duration) (*Issuer, error) {
 
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
-		return nil, fmt.Errorf("identity: nu pot genera cheia Ed25519 a autorității: %w", err)
+		return nil, fmt.Errorf("identity: cannot generate the authority's Ed25519 key: %w", err)
 	}
 
 	return &Issuer{priv: priv, pub: pub, trustDomain: trustDomain, defaultTTL: defaultTTL}, nil
 }
 
-// PublicKey returnează cheia publică a autorității, folosită de
-// SPIFFEValidator pentru a verifica semnătura tokenurilor.
+// PublicKey returns the authority's public key, used by SPIFFEValidator
+// to verify token signatures.
 func (iss *Issuer) PublicKey() ed25519.PublicKey { return iss.pub }
 
-// TrustDomain returnează domeniul de încredere configurat.
+// TrustDomain returns the configured trust domain.
 func (iss *Issuer) TrustDomain() string { return iss.trustDomain }
 
-// DefaultTTL returnează TTL-ul implicit folosit când nu se cere unul explicit.
+// DefaultTTL returns the default TTL used when none is explicitly
+// requested.
 func (iss *Issuer) DefaultTTL() time.Duration { return iss.defaultTTL }
 
-// IssueSVID emite un JWT-SVID nou pentru agentul și sarcina date, cu
-// exact scope-urile primite (nu mai multe — apelantul, de regulă
-// TokenHandler, este responsabil să le valideze față de AllowedScopes
-// înainte de a apela această funcție).
+// IssueSVID issues a new JWT-SVID for the given agent and task, with
+// exactly the scopes provided (no more — the caller, typically
+// TokenHandler, is responsible for validating them against
+// AllowedScopes before calling this function).
 func (iss *Issuer) IssueSVID(agentID, taskID string, scopes []string, ttl time.Duration) (string, Claims, error) {
 	if agentID == "" || taskID == "" {
-		return "", Claims{}, fmt.Errorf("identity: agent_id și task_id sunt obligatorii pentru emiterea unui JWT-SVID")
+		return "", Claims{}, fmt.Errorf("identity: agent_id and task_id are required to issue a JWT-SVID")
 	}
 	if ttl <= 0 {
 		ttl = iss.defaultTTL

@@ -1,8 +1,8 @@
-// sink.go conectează lanțul de conformitate la fluxul de cereri al
-// gateway-ului: implementează logging.AuditSink (aceeași interfață
-// folosită de StdoutLogger) astfel încât fiecare cerere procesată de
-// proxy este, în paralel, scrisă și în registrul tamper-evident — fără
-// nicio modificare a buclei principale din internal/proxy.
+// sink.go connects the compliance chain to the gateway's request flow:
+// it implements logging.AuditSink (the same interface used by
+// StdoutLogger) so every request processed by the proxy is, in
+// parallel, also written to the tamper-evident ledger — with no
+// changes to the main loop in internal/proxy.
 package compliance
 
 import (
@@ -14,23 +14,23 @@ import (
 	"nexus-gateway/internal/parser"
 )
 
-// CostLookup este o funcție care returnează cheltuiala cumulată de azi a
-// unui agent/sarcină, dacă este cunoscută. Sink-ul de conformitate nu
-// importă pachetul finops — apelantul (main.go) îi oferă o funcție
-// construită pe baza ledger-ului FinOps, păstrând pachetele independente.
+// CostLookup is a function that returns an agent/task's cumulative
+// spend for today, if known. The compliance sink doesn't import the
+// finops package — the caller (main.go) supplies a function built on
+// top of the FinOps ledger, keeping the packages independent.
 type CostLookup func(agentID, taskID string) (spentUSDToday float64, ok bool)
 
-// Sink este implementarea logging.AuditSink care scrie în Chain.
+// Sink is the logging.AuditSink implementation that writes to Chain.
 type Sink struct {
 	chain           *Chain
 	costLookup      CostLookup
 	maxExcerptBytes int
 }
 
-// NewSink construiește un Sink. maxExcerptBytes controlează cât din
-// corpul cererii este copiat ca text lizibil în lanț (digest-ul SHA-256
-// este mereu integral, indiferent de această limită). costLookup poate
-// fi nil, caz în care câmpul de cost cumulat este pur și simplu omis.
+// NewSink builds a Sink. maxExcerptBytes controls how much of the
+// request body is copied as readable text into the chain (the SHA-256
+// digest is always full, regardless of this limit). costLookup may be
+// nil, in which case the cumulative cost field is simply omitted.
 func NewSink(chain *Chain, costLookup CostLookup, maxExcerptBytes int) *Sink {
 	if maxExcerptBytes <= 0 {
 		maxExcerptBytes = 4096
@@ -38,13 +38,13 @@ func NewSink(chain *Chain, costLookup CostLookup, maxExcerptBytes int) *Sink {
 	return &Sink{chain: chain, costLookup: costLookup, maxExcerptBytes: maxExcerptBytes}
 }
 
-// RecordRequest implementează logging.AuditSink.
+// RecordRequest implements logging.AuditSink.
 func (s *Sink) RecordRequest(meta *parser.RequestMeta, upstream string) {
 	rec := s.baseRecord("request_received", meta, upstream)
 	s.append(rec)
 }
 
-// RecordResponse implementează logging.AuditSink.
+// RecordResponse implements logging.AuditSink.
 func (s *Sink) RecordResponse(meta *parser.RequestMeta, upstream string, statusCode int, durationMS int64) {
 	rec := s.baseRecord("response_returned", meta, upstream)
 	rec.Decision = decisionForStatus(statusCode)
@@ -58,7 +58,7 @@ func (s *Sink) RecordResponse(meta *parser.RequestMeta, upstream string, statusC
 	s.append(rec)
 }
 
-// RecordRejection implementează logging.AuditSink.
+// RecordRejection implements logging.AuditSink.
 func (s *Sink) RecordRejection(meta *parser.RequestMeta, reason string) {
 	rec := s.baseRecord("request_rejected", meta, meta.UpstreamName)
 	rec.Decision = "rejected"
@@ -66,12 +66,12 @@ func (s *Sink) RecordRejection(meta *parser.RequestMeta, reason string) {
 	s.append(rec)
 }
 
-// baseRecord construiește câmpurile comune tuturor evenimentelor pe
-// baza metadatelor cererii — inclusiv digest-ul/excerpt-ul promptului.
+// baseRecord builds the fields shared by every event type, based on the
+// request's metadata — including the prompt's digest/excerpt.
 func (s *Sink) baseRecord(event string, meta *parser.RequestMeta, upstream string) Record {
-	// Tool preferă numele exact al instrumentului MCP, mai precis decât
-	// metoda JSON-RPC generică "tools/call" — un auditor vede direct
-	// "send_email", nu doar că s-a invocat un instrument nespecificat.
+	// Tool prefers the exact MCP tool name, more precise than the generic
+	// JSON-RPC method "tools/call" — an auditor sees directly
+	// "send_email", not just that some unspecified tool was invoked.
 	tool := meta.JSONRPCMethod
 	if meta.MCPTool != "" {
 		tool = meta.MCPTool
@@ -103,9 +103,9 @@ func (s *Sink) baseRecord(event string, meta *parser.RequestMeta, upstream strin
 		if utf8.Valid(excerpt) {
 			rec.PromptExcerpt = string(excerpt)
 		} else {
-			// Conținut binar/non-text: nu îl scriem ca text ilizibil —
-			// digest-ul SHA-256 de mai sus rămâne dovada de integritate.
-			rec.PromptExcerpt = "[conținut binar — vezi prompt_sha256]"
+			// Binary/non-text content: we don't write it as unreadable text
+			// — the SHA-256 digest above remains the proof of integrity.
+			rec.PromptExcerpt = "[binary content — see prompt_sha256]"
 		}
 		rec.PromptTruncated = truncated
 	}
@@ -115,12 +115,12 @@ func (s *Sink) baseRecord(event string, meta *parser.RequestMeta, upstream strin
 
 func (s *Sink) append(rec Record) {
 	if _, err := s.chain.Append(rec); err != nil {
-		// Decizie documentată: o eroare de scriere în lanțul de
-		// conformitate este logată cu severitate, dar NU blochează
-		// răspunsul către agent (fail-open). Un mediu de producție cu
-		// cerințe stricte de conformitate ar trebui să configureze
-		// fail-closed (respingerea cererilor cât timp lanțul e
-		// indisponibil) — marcat explicit ca lucru viitor în README.
+		// Documented decision: a write error to the compliance chain is
+		// logged with high severity, but does NOT block the response to
+		// the agent (fail-open). A production environment with strict
+		// compliance requirements should configure fail-closed (rejecting
+		// requests while the chain is unavailable) — explicitly marked as
+		// future work in the README.
 		slog.Error("nexus.compliance.chain_write_failed",
 			"event", "chain_write_failed",
 			"chain_event", rec.Event,

@@ -14,7 +14,7 @@ func newTestChain(t *testing.T) *Chain {
 	path := filepath.Join(t.TempDir(), "chain.jsonl")
 	c, err := OpenChain(path, 6)
 	if err != nil {
-		t.Fatalf("OpenChain a eșuat: %v", err)
+		t.Fatalf("OpenChain failed: %v", err)
 	}
 	t.Cleanup(func() { c.Close() })
 	return c
@@ -25,7 +25,7 @@ func TestSuspendHandler_SuspendsAndLogsToChain(t *testing.T) {
 	chain := newTestChain(t)
 	handler := SuspendHandler(registry, chain)
 
-	payload, _ := json.Marshal(suspendRequest{AgentID: "agent-1", Reason: "halucinație detectată", Operator: "andrei"})
+	payload, _ := json.Marshal(suspendRequest{AgentID: "agent-1", Reason: "hallucination detected", Operator: "andrei"})
 	req := httptest.NewRequest(http.MethodPost, "/nexus/control/suspend", bytes.NewReader(payload))
 	rec := httptest.NewRecorder()
 	handler(rec, req)
@@ -34,12 +34,12 @@ func TestSuspendHandler_SuspendsAndLogsToChain(t *testing.T) {
 		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
 	}
 	if suspended, _ := registry.IsSuspended("agent-1"); !suspended {
-		t.Error("agentul ar trebui suspendat după apel")
+		t.Error("the agent should be suspended after the call")
 	}
 
 	n, err := VerifyChain(chain.path)
 	if err != nil || n != 1 {
-		t.Errorf("suspendarea ar trebui logată în lanț: n=%d err=%v", n, err)
+		t.Errorf("the suspension should be logged to the chain: n=%d err=%v", n, err)
 	}
 }
 
@@ -49,13 +49,13 @@ func TestSuspendHandler_RejectsMissingFields(t *testing.T) {
 	rec := httptest.NewRecorder()
 	handler(rec, req)
 	if rec.Code != http.StatusBadRequest {
-		t.Errorf("status = %d, vroiam 400 (reason lipsă)", rec.Code)
+		t.Errorf("status = %d, want 400 (missing reason)", rec.Code)
 	}
 }
 
 func TestResumeHandler_ResumesAndLogsToChain(t *testing.T) {
 	registry := NewSuspensionRegistry()
-	registry.Suspend("agent-1", "motiv", "op")
+	registry.Suspend("agent-1", "reason", "op")
 	chain := newTestChain(t)
 	handler := ResumeHandler(registry, chain)
 
@@ -68,7 +68,7 @@ func TestResumeHandler_ResumesAndLogsToChain(t *testing.T) {
 		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
 	}
 	if suspended, _ := registry.IsSuspended("agent-1"); suspended {
-		t.Error("agentul nu ar trebui să mai fie suspendat")
+		t.Error("the agent should no longer be suspended")
 	}
 }
 
@@ -83,10 +83,10 @@ func TestSuspendedListHandler_ReturnsCurrentList(t *testing.T) {
 
 	var list []SuspensionRecord
 	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil {
-		t.Fatalf("JSON invalid: %v", err)
+		t.Fatalf("invalid JSON: %v", err)
 	}
 	if len(list) != 1 || list[0].AgentID != "agent-1" {
-		t.Errorf("listă greșită: %+v", list)
+		t.Errorf("wrong list: %+v", list)
 	}
 }
 
@@ -101,9 +101,9 @@ func TestVerifyHandler_ReportsOKForFreshChain(t *testing.T) {
 
 	var resp map[string]any
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("JSON invalid: %v", err)
+		t.Fatalf("invalid JSON: %v", err)
 	}
 	if resp["ok"] != true {
-		t.Errorf("ok = %v, vroiam true", resp["ok"])
+		t.Errorf("ok = %v, want true", resp["ok"])
 	}
 }

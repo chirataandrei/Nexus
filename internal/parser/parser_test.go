@@ -13,16 +13,16 @@ func TestParse_RESTRequest(t *testing.T) {
 
 	meta, body, err := Parse(req)
 	if err != nil {
-		t.Fatalf("Parse a returnat eroare neașteptată: %v", err)
+		t.Fatalf("Parse returned an unexpected error: %v", err)
 	}
 	if meta.Protocol != ProtocolREST {
-		t.Errorf("protocol = %q, vroiam %q", meta.Protocol, ProtocolREST)
+		t.Errorf("protocol = %q, want %q", meta.Protocol, ProtocolREST)
 	}
 	if meta.AgentID != "agent-123" {
-		t.Errorf("agent_id = %q, vroiam %q", meta.AgentID, "agent-123")
+		t.Errorf("agent_id = %q, want %q", meta.AgentID, "agent-123")
 	}
 	if len(body) != 0 {
-		t.Errorf("body ar trebui gol pentru un GET fără corp, am primit %d bytes", len(body))
+		t.Errorf("body should be empty for a GET with no body, got %d bytes", len(body))
 	}
 }
 
@@ -33,19 +33,19 @@ func TestParse_JSONRPCRequest_GenericNonMCPMethod(t *testing.T) {
 
 	meta, body, err := Parse(req)
 	if err != nil {
-		t.Fatalf("Parse a returnat eroare neașteptată: %v", err)
+		t.Fatalf("Parse returned an unexpected error: %v", err)
 	}
 	if meta.Protocol != ProtocolJSONRPC {
-		t.Fatalf("protocol = %q, vroiam %q", meta.Protocol, ProtocolJSONRPC)
+		t.Fatalf("protocol = %q, want %q", meta.Protocol, ProtocolJSONRPC)
 	}
 	if meta.JSONRPCMethod != "math/add" {
-		t.Errorf("jsonrpc_method = %q, vroiam %q", meta.JSONRPCMethod, "math/add")
+		t.Errorf("jsonrpc_method = %q, want %q", meta.JSONRPCMethod, "math/add")
 	}
 	if meta.MCPTool != "" {
-		t.Errorf("o metodă JSON-RPC generică nu ar trebui să populeze mcp_tool, am primit %q", meta.MCPTool)
+		t.Errorf("a generic JSON-RPC method should not populate mcp_tool, got %q", meta.MCPTool)
 	}
 	if string(body) != payload {
-		t.Errorf("body ar trebui păstrat intact pentru proxy, am primit: %s", body)
+		t.Errorf("body should be kept intact for the proxy, got: %s", body)
 	}
 }
 
@@ -56,19 +56,19 @@ func TestParse_MCPToolsCall_DetectedAsMCPWithToolName(t *testing.T) {
 
 	meta, body, err := Parse(req)
 	if err != nil {
-		t.Fatalf("Parse a returnat eroare neașteptată: %v", err)
+		t.Fatalf("Parse returned an unexpected error: %v", err)
 	}
 	if meta.Protocol != ProtocolMCP {
-		t.Fatalf("protocol = %q, vroiam %q", meta.Protocol, ProtocolMCP)
+		t.Fatalf("protocol = %q, want %q", meta.Protocol, ProtocolMCP)
 	}
 	if meta.JSONRPCMethod != "tools/call" {
-		t.Errorf("jsonrpc_method = %q, vroiam %q", meta.JSONRPCMethod, "tools/call")
+		t.Errorf("jsonrpc_method = %q, want %q", meta.JSONRPCMethod, "tools/call")
 	}
 	if meta.MCPTool != "read_email" {
-		t.Errorf("mcp_tool = %q, vroiam %q", meta.MCPTool, "read_email")
+		t.Errorf("mcp_tool = %q, want %q", meta.MCPTool, "read_email")
 	}
 	if string(body) != payload {
-		t.Errorf("body ar trebui păstrat intact pentru proxy, am primit: %s", body)
+		t.Errorf("body should be kept intact for the proxy, got: %s", body)
 	}
 }
 
@@ -78,13 +78,13 @@ func TestParse_MCPToolsList_DetectedAsMCPWithoutToolName(t *testing.T) {
 
 	meta, _, err := Parse(req)
 	if err != nil {
-		t.Fatalf("Parse a returnat eroare neașteptată: %v", err)
+		t.Fatalf("Parse returned an unexpected error: %v", err)
 	}
 	if meta.Protocol != ProtocolMCP {
-		t.Errorf("protocol = %q, vroiam %q", meta.Protocol, ProtocolMCP)
+		t.Errorf("protocol = %q, want %q", meta.Protocol, ProtocolMCP)
 	}
 	if meta.MCPTool != "" {
-		t.Errorf("tools/list nu ar trebui să populeze mcp_tool, am primit %q", meta.MCPTool)
+		t.Errorf("tools/list should not populate mcp_tool, got %q", meta.MCPTool)
 	}
 }
 
@@ -94,10 +94,10 @@ func TestParse_RedactsSensitiveHeaders(t *testing.T) {
 
 	meta, _, err := Parse(req)
 	if err != nil {
-		t.Fatalf("Parse a returnat eroare neașteptată: %v", err)
+		t.Fatalf("Parse returned an unexpected error: %v", err)
 	}
 	if got := meta.Headers["Authorization"]; got != "[REDACTED]" {
-		t.Errorf("Authorization ar trebui mascat, am primit: %q", got)
+		t.Errorf("Authorization should be redacted, got: %q", got)
 	}
 }
 
@@ -106,9 +106,9 @@ func TestParse_MalformedJSONIsTreatedAsREST(t *testing.T) {
 
 	meta, _, err := Parse(req)
 	if err != nil {
-		t.Fatalf("Parse a returnat eroare neașteptată: %v", err)
+		t.Fatalf("Parse returned an unexpected error: %v", err)
 	}
 	if meta.Protocol != ProtocolREST {
-		t.Errorf("JSON malformat ar trebui tratat ca REST, am primit %q", meta.Protocol)
+		t.Errorf("malformed JSON should be treated as REST, got %q", meta.Protocol)
 	}
 }

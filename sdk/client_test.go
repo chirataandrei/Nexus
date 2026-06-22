@@ -10,9 +10,10 @@ import (
 	"time"
 )
 
-// newMockNexus simulează gateway-ul Nexus: emite tokenuri "fixture" (nu
-// JWT-uri reale — clientului SDK nu-i pasă de format, doar de contract)
-// și expune un upstream protejat care cere antetul Authorization corect.
+// newMockNexus simulates the Nexus gateway: it issues "fixture" tokens
+// (not real JWTs — the SDK client doesn't care about the format, only
+// the contract) and exposes a protected upstream that requires the
+// correct Authorization header.
 func newMockNexus(t *testing.T, ttl time.Duration) (*httptest.Server, *int32) {
 	t.Helper()
 	var tokenRequests int32
@@ -40,7 +41,7 @@ func newMockNexus(t *testing.T, ttl time.Duration) (*httptest.Server, *int32) {
 	mux.HandleFunc("/v1/protected", func(w http.ResponseWriter, r *http.Request) {
 		auth := r.Header.Get("Authorization")
 		if auth != "Bearer "+currentToken {
-			http.Error(w, "token invalid sau expirat", http.StatusUnauthorized)
+			http.Error(w, "invalid or expired token", http.StatusUnauthorized)
 			return
 		}
 		w.WriteHeader(http.StatusOK)
@@ -59,35 +60,35 @@ func TestClient_Token_FetchesAndCaches(t *testing.T) {
 
 	tok1, err := c.Token(context.Background())
 	if err != nil {
-		t.Fatalf("Token a eșuat: %v", err)
+		t.Fatalf("Token failed: %v", err)
 	}
 	tok2, err := c.Token(context.Background())
 	if err != nil {
-		t.Fatalf("Token (a doua oară) a eșuat: %v", err)
+		t.Fatalf("Token (second call) failed: %v", err)
 	}
 	if tok1 != tok2 {
-		t.Errorf("tokenul ar trebui cache-uit între apeluri, am primit %q și %q", tok1, tok2)
+		t.Errorf("the token should be cached between calls, got %q and %q", tok1, tok2)
 	}
 	if got := atomic.LoadInt32(tokenRequests); got != 1 {
-		t.Errorf("ar trebui exact 1 cerere de token, am observat %d", got)
+		t.Errorf("expected exactly 1 token request, observed %d", got)
 	}
 }
 
 func TestClient_Token_RefreshesWhenNearExpiry(t *testing.T) {
-	// TTL mai mic decât marja de refresh (30s) => fiecare apel reîmprospătează.
+	// TTL shorter than the refresh margin (30s) => every call refreshes.
 	srv, tokenRequests := newMockNexus(t, 1*time.Second)
 	defer srv.Close()
 
 	c := New(srv.URL, "agent-1", "secret", "task-1")
 
 	if _, err := c.Token(context.Background()); err != nil {
-		t.Fatalf("Token a eșuat: %v", err)
+		t.Fatalf("Token failed: %v", err)
 	}
 	if _, err := c.Token(context.Background()); err != nil {
-		t.Fatalf("Token a eșuat: %v", err)
+		t.Fatalf("Token failed: %v", err)
 	}
 	if got := atomic.LoadInt32(tokenRequests); got < 2 {
-		t.Errorf("ar trebui reîmprospătat la fiecare apel cu TTL sub marja de refresh, am observat %d cereri", got)
+		t.Errorf("should refresh on every call when TTL is below the refresh margin, observed %d requests", got)
 	}
 }
 
@@ -100,11 +101,11 @@ func TestClient_Do_AttachesBearerToken(t *testing.T) {
 	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/v1/protected", nil)
 	resp, err := c.Do(req)
 	if err != nil {
-		t.Fatalf("Do a eșuat: %v", err)
+		t.Fatalf("Do failed: %v", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		t.Errorf("status = %d, vroiam 200", resp.StatusCode)
+		t.Errorf("status = %d, want 200", resp.StatusCode)
 	}
 }
 
@@ -117,25 +118,25 @@ func TestClient_HTTPClient_AttachesBearerTokenTransparently(t *testing.T) {
 
 	resp, err := httpClient.Get(srv.URL + "/v1/protected")
 	if err != nil {
-		t.Fatalf("Get a eșuat: %v", err)
+		t.Fatalf("Get failed: %v", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		t.Errorf("status = %d, vroiam 200", resp.StatusCode)
+		t.Errorf("status = %d, want 200", resp.StatusCode)
 	}
 }
 
 func TestClient_PropagatesServerErrorOnTokenRequestFailure(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/nexus/identity/token", func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, "autentificare eșuată", http.StatusUnauthorized)
+		http.Error(w, "authentication failed", http.StatusUnauthorized)
 	})
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	c := New(srv.URL, "agent-1", "secret-gresit", "task-1")
+	c := New(srv.URL, "agent-1", "wrong-secret", "task-1")
 	if _, err := c.Token(context.Background()); err == nil {
-		t.Error("Token ar trebui să propage eroarea serverului")
+		t.Error("Token should propagate the server's error")
 	}
 }
 
@@ -152,13 +153,13 @@ func TestWithScopesAndTTL_AreSentToServer(t *testing.T) {
 
 	c := New(srv.URL, "agent-1", "secret", "task-1", WithScopes("llm:openai:invoke"), WithTTL(45*time.Second))
 	if _, err := c.Token(context.Background()); err != nil {
-		t.Fatalf("Token a eșuat: %v", err)
+		t.Fatalf("Token failed: %v", err)
 	}
 
 	if len(captured.Scopes) != 1 || captured.Scopes[0] != "llm:openai:invoke" {
-		t.Errorf("scopes trimise greșit: %+v", captured.Scopes)
+		t.Errorf("wrong scopes sent: %+v", captured.Scopes)
 	}
 	if captured.TTLSeconds != 45 {
-		t.Errorf("ttl_seconds = %d, vroiam 45", captured.TTLSeconds)
+		t.Errorf("ttl_seconds = %d, want 45", captured.TTLSeconds)
 	}
 }

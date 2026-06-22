@@ -1,74 +1,74 @@
 # Nexus Trust Protocol — Gateway
 
-Reverse proxy Layer 7 scris în Go (doar bibliotecă standard, fără dependențe externe) care intermediază traficul dintre agenții IA și modelele LLM / serviciile interne. Elimină cheile API statice (fiecare agent obține o identitate criptografică efemeră, inspirată de WIMSE/SPIFFE), aplică buget în timp real per agent, scrie fiecare cerere într-un registru tamper-evident, și recunoaște nativ Model Context Protocol (MCP).
+A Layer 7 reverse proxy written in Go (standard library only, no external dependencies) that sits between AI agents and LLM models / internal services. It eliminates static API keys (each agent gets an ephemeral cryptographic identity, inspired by WIMSE/SPIFFE), enforces real-time per-agent budgets, writes every request to a tamper-evident ledger, and natively recognizes the Model Context Protocol (MCP).
 
-## Structura proiectului
+## Project structure
 
 ```
 gateway/
-  go.work               workspace Go: leagă modulul gateway de modulul sdk
-  cmd/nexus-gateway/    punctul de intrare (main.go)
-  cmd/nexus-agentctl/   utilitar dev: generează secret_hash pentru agents.json
-  internal/config/      încărcare și validare configurație (JSON)
-  internal/parser/      detecție REST/JSON-RPC/MCP, extragere metadate
-  internal/mcp/         recunoaștere metode MCP, extragere nume tool
-  internal/proxy/       rutare pe prefix de path + hook-uri de extensie
-  internal/logging/     jurnalizare structurată (stdout, JSON) + Fanout
-  internal/identity/    AIMS — JWT-SVID, registru de agenți, validator
-  internal/finops/      ledger de cost, politici de buget, dashboard
-  internal/compliance/  lanț WORM tamper-evident, kill-switch
-  sdk/                  SDK client Go, modul Go separat (sdk/go.mod)
-    examples/basic/      exemplu de utilizare a SDK-ului
-  docs/MCP.md           cum funcționează compatibilitatea MCP + scope-uri per-tool
-  data/                              lanțul de conformitate (generat la rulare, ignorat de git)
-  configs/config.json                exemplu de configurare gateway
-  configs/agents.json                 exemplu de registru de agenți
-  configs/finops_policies.json        exemplu de politici de buget
+  go.work               Go workspace: links the gateway module to the sdk module
+  cmd/nexus-gateway/    entry point (main.go)
+  cmd/nexus-agentctl/   dev utility: generates secret_hash for agents.json
+  internal/config/      configuration loading and validation (JSON)
+  internal/parser/      REST/JSON-RPC/MCP detection, metadata extraction
+  internal/mcp/         MCP method recognition, tool name extraction
+  internal/proxy/       path-prefix routing + extension hooks
+  internal/logging/     structured logging (stdout, JSON) + Fanout
+  internal/identity/    AIMS — JWT-SVID, agent registry, validator
+  internal/finops/      cost ledger, budget policies, dashboard
+  internal/compliance/  tamper-evident WORM chain, kill switch
+  sdk/                  Go client SDK, a separate Go module (sdk/go.mod)
+    examples/basic/      example use of the SDK
+  docs/MCP.md           how MCP compatibility + per-tool scopes work
+  data/                              compliance chain (generated at runtime, git-ignored)
+  configs/config.json                example gateway configuration
+  configs/agents.json                 example agent registry
+  configs/finops_policies.json        example budget policies
 ```
 
-## Rutare și protocoale
+## Routing and protocols
 
-`internal/parser` interceptează cereri HTTP/REST și JSON-RPC pe baza unui prefix de path configurat per upstream, iar `internal/proxy` le rutează către upstream-ul corect (model LLM extern sau serviciu intern), cu suport de "strip prefix". Fiecare cerere e logată structurat (JSON pe stdout): metodă HTTP, path, protocol detectat, metoda JSON-RPC, durată, status code. Anteturile sensibile (`Authorization`, `X-Api-Key`, `Cookie`) sunt mascate automat.
+`internal/parser` intercepts HTTP/REST and JSON-RPC requests based on a per-upstream path prefix, and `internal/proxy` routes them to the right upstream (external LLM model or internal service), with "strip prefix" support. Every request is logged in a structured way (JSON on stdout): HTTP method, path, detected protocol, JSON-RPC method, duration, status code. Sensitive headers (`Authorization`, `X-Api-Key`, `Cookie`) are automatically masked.
 
-Pe lângă JSON-RPC generic, gateway-ul recunoaște explicit vocabularul Model Context Protocol (`tools/call`, `tools/list`, `resources/*`, `prompts/*`, `notifications/*`) — `RequestMeta.Protocol` devine `"MCP"` în loc de generic `"JSON-RPC"`, iar pentru `tools/call` numele exact al instrumentului apelat este extras în `RequestMeta.MCPTool`. Detalii: [`docs/MCP.md`](docs/MCP.md).
+Beyond generic JSON-RPC, the gateway explicitly recognizes the Model Context Protocol vocabulary (`tools/call`, `tools/list`, `resources/*`, `prompts/*`, `notifications/*`) — `RequestMeta.Protocol` becomes `"MCP"` instead of the generic `"JSON-RPC"`, and for `tools/call`, the exact name of the tool being called is extracted into `RequestMeta.MCPTool`. Details: [`docs/MCP.md`](docs/MCP.md).
 
-## Identitate (AIMS — Agent Identity Management System)
+## Identity (AIMS — Agent Identity Management System)
 
-Niciun secret pe termen lung nu circulă către upstream-uri. Un agent face "bootstrap" o singură dată: trimite `agent_id` + un secret pre-distribuit la `POST /nexus/identity/token` și primește înapoi un **JWT-SVID** — un token semnat Ed25519, legat strict de un `agent_id` + `task_id` + un set explicit de `scopes`, valabil implicit 5 minute. Fiecare token are un `sub` de forma `spiffe://<trust_domain>/agent/<agent_id>/task/<task_id>`.
+No long-lived secret ever travels to the upstreams. An agent does a one-time "bootstrap": it sends `agent_id` + a pre-distributed secret to `POST /nexus/identity/token` and gets back a **JWT-SVID** — an Ed25519-signed token, strictly tied to an `agent_id` + `task_id` + an explicit set of `scopes`, valid for 5 minutes by default. Every token has a `sub` of the form `spiffe://<trust_domain>/agent/<agent_id>/task/<task_id>`.
 
-`internal/identity.SPIFFEValidator` respinge automat orice cerere fără antet `Authorization: Bearer <token>`, cu semnătură invalidă, expirată, dintr-un alt domeniu de încredere, sau fără scope-ul cerut explicit de rută. Registrul de agenți (`configs/agents.json`) definește `allowed_scopes` per agent — orice scope cerut care nu este în `allowed_scopes` este respins cu `403` (anti-escaladare de privilegii). `parser.RequestMeta` distinge `AgentID` (antet nesigur, doar depanare) de `VerifiedAgentID`/`SPIFFEID`/`VerifiedScopes` (populate exclusiv după o verificare criptografică reușită).
+`internal/identity.SPIFFEValidator` automatically rejects any request without an `Authorization: Bearer <token>` header, with an invalid or expired signature, from a different trust domain, or without the scope the route explicitly requires. The agent registry (`configs/agents.json`) defines `allowed_scopes` per agent — any requested scope not in `allowed_scopes` is rejected with `403` (anti-privilege-escalation). `parser.RequestMeta` distinguishes `AgentID` (an unsafe header, debugging only) from `VerifiedAgentID`/`SPIFFEID`/`VerifiedScopes` (populated only after a successful cryptographic check).
 
-Instrumente diferite din spatele aceluiași upstream MCP pot cere permisiuni diferite: `config.Upstream.ToolScopes` (hartă `nume_tool -> scope`) face ca, de exemplu, `read_email` să ceară `tools:email:read` și `delete_email` să ceară `tools:email:delete`, chiar dacă trec prin același upstream.
+Different tools behind the same MCP upstream can require different permissions: `config.Upstream.ToolScopes` (a `tool_name -> scope` map) lets, for example, `read_email` require `tools:email:read` and `delete_email` require `tools:email:delete`, even though both go through the same upstream.
 
-## Buget (ruterul FinOps)
+## Budget (the FinOps router)
 
-Înainte ca o cerere să ajungă la LLM, `internal/finops.Enforcer` verifică în `Ledger`-ul în memorie dacă agentul a epuizat bugetul zilnic sau limita de tokeni a sarcinii curente — dacă da, cererea e respinsă cu `429`, fără să mai consume vreun token costisitor. `internal/finops.Recorder` citește `usage` din răspunsul LLM (OpenAI/Anthropic) prin `ModifyResponse` al reverse proxy-ului și actualizează ledger-ul, fără să modifice răspunsul trimis agentului. `max_tokens_per_task` limitează tokenii cumulați într-o singură sarcină, indiferent de câte cereri separate face agentul — un circuit breaker direct împotriva buclelor de halucinație recurentă.
+Before a request reaches the LLM, `internal/finops.Enforcer` checks the in-memory `Ledger` to see whether the agent has already exhausted its daily budget or the current task's token limit — if so, the request is rejected with `429`, without consuming a single costly token. `internal/finops.Recorder` reads `usage` from the LLM's response (OpenAI/Anthropic) through the reverse proxy's `ModifyResponse`, and updates the ledger without altering the response sent to the agent. `max_tokens_per_task` caps the tokens accumulated within a single task, no matter how many separate requests the agent makes — a direct circuit breaker against recurring hallucination loops.
 
-Dashboard simplu la `GET /nexus/finops/dashboard`, plus API la `/nexus/finops/usage` și `/nexus/finops/policies`.
+A simple dashboard is available at `GET /nexus/finops/dashboard`, plus an API at `/nexus/finops/usage` and `/nexus/finops/policies`.
 
-## Conformitate și kill-switch
+## Compliance and kill switch
 
-Fiecare cerere generează o înregistrare în `internal/compliance.Chain`, care include hash-ul ei și hash-ul înregistrării precedente — un mini-blockchain local, scris doar prin adăugare, cu `fsync` la fiecare scriere. Orice modificare retroactivă (editare, ștergere, reordonare) rupe lanțul de hash-uri și e detectabilă: `OpenChain` re-verifică integral lanțul existent la pornire, iar dacă a fost modificat în afara gateway-ului, pornirea e refuzată.
+Every request generates a record in `internal/compliance.Chain`, which includes its own hash and the hash of the previous record — a local mini-blockchain, written strictly by appending, with `fsync` on every write. Any retroactive change (editing, deleting, reordering) breaks the hash chain and is detectable: `OpenChain` fully re-verifies the existing chain at startup, and if it was modified outside the gateway, startup is refused.
 
-`internal/compliance.Sink` loghează la fiecare cerere: identitatea verificată *și* cea declarată, instrumentul/upstream-ul apelat, decizia finală, status, durată, cheltuiala cumulată de azi, și promptul (digest SHA-256 integral + extras lizibil trunchiat configurabil). Retenția minimă de 6 luni e impusă la nivel de configurare.
+`internal/compliance.Sink` logs, for every request: the verified identity *and* the claimed one, the tool/upstream called, the final decision, status, duration, today's cumulative spend, and the prompt (full SHA-256 digest + a configurable, truncated readable excerpt). The minimum 6-month retention is enforced at the configuration level.
 
-Un operator poate suspenda instantaneu și global un agent: `POST /nexus/control/suspend|resume`, `GET /nexus/control/suspended` — cererile cu token deja emis și emiterea de tokenuri noi sunt ambele blocate imediat, și fiecare acțiune e ea însăși auditată în lanț. `GET /nexus/compliance/verify` confirmă în orice moment integritatea istoricului.
+An operator can instantly and globally suspend an agent: `POST /nexus/control/suspend|resume`, `GET /nexus/control/suspended` — requests using an already-issued token and the issuance of new tokens are both blocked immediately, and each action is itself recorded in the chain. `GET /nexus/compliance/verify` confirms the history's integrity at any time.
 
-## SDK pentru dezvoltatori
+## SDK for developers
 
-`sdk/` e un modul Go separat, fără nicio dependență de codul serverului (`internal/`), care gestionează automat bootstrap-ul de identitate, cache-ul și reîmprospătarea tokenului JWT-SVID. Se poate conecta la orice SDK existent printr-un `*http.Client` drop-in (`client.HTTPClient()`). Vezi [`sdk/README.md`](sdk/README.md) pentru instalare și exemple complete, și `sdk/examples/basic` pentru un program rulabil.
+`sdk/` is a separate Go module, with no dependency on the server's code (`internal/`), that automatically handles identity bootstrap, caching, and refreshing of the JWT-SVID token. It can plug into any existing SDK through a drop-in `*http.Client` (`client.HTTPClient()`). See [`sdk/README.md`](sdk/README.md) for installation and full examples, and `sdk/examples/basic` for a runnable program.
 
-## Limitări cunoscute
+## Known limitations
 
-- Cheia Ed25519 a autorității de identitate e generată în memorie la pornire — un restart invalidează tokenurile emise anterior.
-- `Ledger`-ul FinOps e în memoria unui singur proces — mai multe instanțe Nexus în paralel ar avea nevoie de un store partajat (ex. Redis).
-- Lanțul de conformitate e un singur fișier local, pe o singură instanță; scrierea e fail-open la eroare; nu există purjare automată la expirarea retenției.
-- Integrarea cu portofele non-custodial (Locus, Skyfire) menționată în propunerea inițială rămâne în afara scopului actual.
-- Compatibilitatea MCP recunoaște forma mesajelor JSON-RPC, nu implementează un server/client MCP complet (handshake, capabilități, transport SSE/stdio); cereri JSON-RPC batch nu sunt despachetate individual.
+- The identity authority's Ed25519 key is generated in memory at startup — a restart invalidates previously issued tokens.
+- The FinOps `Ledger` lives in a single process's memory — multiple Nexus instances running in parallel would need a shared store (e.g. Redis).
+- The compliance chain is a single local file on a single instance; writes are fail-open on error; there's no automatic purging once retention expires.
+- The non-custodial wallet integration (Locus, Skyfire) mentioned in the original proposal remains out of scope for now.
+- MCP compatibility recognizes the shape of JSON-RPC messages; it doesn't implement a full MCP server/client (handshake, capability negotiation, SSE/stdio transport); JSON-RPC batch requests aren't unpacked individually.
 
-## Rulare locală
+## Running locally
 
-Necesită Go 1.22+.
+Requires Go 1.22+.
 
 ```bash
 cd gateway
@@ -77,43 +77,43 @@ go test ./... ./sdk/...     # gateway + sdk
 go run ./cmd/nexus-gateway -config configs/config.json
 ```
 
-`go.work` din rădăcina `gateway/` leagă cele două module Go (gateway-ul propriu-zis și SDK-ul client) astfel încât comenzi precum `go test ./... ./sdk/...` să funcționeze dintr-un singur loc, fără ca cele două să fie cuplate la nivel de cod — SDK-ul nu importă nimic din `internal/`.
+`go.work` at the root of `gateway/` links the two Go modules (the gateway itself and the client SDK) so commands like `go test ./... ./sdk/...` work from a single place, without the two being coupled at the code level — the SDK doesn't import anything from `internal/`.
 
-Implicit, gateway-ul ascultă pe `:8080`, domeniul de încredere este `nexus.trust`, retenția de conformitate este 6 luni, și rutează:
+By default, the gateway listens on `:8080`, the trust domain is `nexus.trust`, the compliance retention is 6 months, and it routes:
 
-| Prefix path         | Upstream                     | Scope necesar              | Preț / 1000 tokeni |
+| Path prefix         | Upstream                     | Required scope             | Price / 1000 tokens |
 |----------------------|-------------------------------|------------------------------|----------------------|
 | `/v1/openai/...`     | `https://api.openai.com`      | `llm:openai:invoke`          | $0.01 |
 | `/v1/anthropic/...`  | `https://api.anthropic.com`   | `llm:anthropic:invoke`       | $0.015 |
-| `/v1/internal/...`   | `http://localhost:9000`       | `tools:internal:invoke` (sau scope per-tool, vezi `tool_scopes`) | $0 |
+| `/v1/internal/...`   | `http://localhost:9000`       | `tools:internal:invoke` (or a per-tool scope, see `tool_scopes`) | $0 |
 
-### 1. Înregistrează un agent și cere un JWT-SVID
+### 1. Register an agent and request a JWT-SVID
 
 ```bash
-go run ./cmd/nexus-agentctl -agent-id agent-demo-1 -secret "un-secret" -scopes "llm:openai:invoke"
-# copiază rezultatul în configs/agents.json
+go run ./cmd/nexus-agentctl -agent-id agent-demo-1 -secret "a-secret" -scopes "llm:openai:invoke"
+# copy the result into configs/agents.json
 
 TOKEN=$(curl -s -X POST http://localhost:8080/nexus/identity/token \
   -H "Content-Type: application/json" \
-  -d '{"agent_id":"agent-demo-1","secret":"un-secret","task_id":"task-1"}' \
+  -d '{"agent_id":"agent-demo-1","secret":"a-secret","task_id":"task-1"}' \
   | python3 -c "import sys,json;print(json.load(sys.stdin)['token'])")
 
 curl http://localhost:8080/v1/openai/models -H "Authorization: Bearer $TOKEN"
 ```
 
-Sau, echivalent, din cod Go folosind SDK-ul (fără să gestionezi manual tokenul):
+Or, equivalently, from Go code using the SDK (without managing the token yourself):
 
 ```go
-client := nexussdk.New("http://localhost:8080", "agent-demo-1", "un-secret", "task-1")
-resp, err := client.Do(req) // atașează automat Authorization: Bearer <token>
+client := nexussdk.New("http://localhost:8080", "agent-demo-1", "a-secret", "task-1")
+resp, err := client.Do(req) // automatically attaches Authorization: Bearer <token>
 ```
 
-### 2. Kill-switch
+### 2. Kill switch
 
 ```bash
 curl -X POST http://localhost:8080/nexus/control/suspend \
   -H "Content-Type: application/json" \
-  -d '{"agent_id":"agent-demo-1","reason":"comportament anormal","operator":"andrei"}'
+  -d '{"agent_id":"agent-demo-1","reason":"abnormal behavior","operator":"andrei"}'
 
 curl http://localhost:8080/nexus/control/suspended
 
@@ -121,23 +121,23 @@ curl -X POST http://localhost:8080/nexus/control/resume \
   -H "Content-Type: application/json" -d '{"agent_id":"agent-demo-1","operator":"andrei"}'
 ```
 
-### 3. Verifică integritatea registrului de conformitate
+### 3. Verify the compliance ledger's integrity
 
 ```bash
 curl http://localhost:8080/nexus/compliance/verify
 # {"ok": true, "verified_records": N}
 ```
 
-### 4. Dashboard FinOps
+### 4. FinOps dashboard
 
 ```
 http://localhost:8080/nexus/finops/dashboard
 ```
 
-## Teste
+## Tests
 
-`go test ./... ./sdk/... -v` rulează suita completă (parser, proxy, identity, finops, compliance, config, MCP, SDK client). Acoperă, printre altele: respingerea unui lanț de conformitate cu conținut modificat sau cu o înregistrare ștearsă din mijloc, anti-escaladare de scope, o buclă de cereri repetate blocată exact la limita bugetului, un agent suspendat respins atât la validare cât și la cererea unui token nou, recunoașterea metodelor MCP și prioritatea scope-ului per-tool față de cel generic al upstream-ului, și clientul SDK (cache token, refresh automat, injectare `Authorization` prin `Do` și prin `HTTPClient()`).
+`go test ./... ./sdk/... -v` runs the full suite (parser, proxy, identity, finops, compliance, config, MCP, SDK client). It covers, among other things: rejecting a compliance chain with tampered content or a record deleted from the middle, anti-privilege-escalation for scopes, a loop of repeated requests blocked exactly at the budget limit, a suspended agent rejected both at validation and when requesting a new token, recognition of MCP methods and the priority of per-tool scopes over the upstream's generic one, and the SDK client (token caching, automatic refresh, `Authorization` injection through `Do` and through `HTTPClient()`).
 
-## Următorii pași
+## Next steps
 
-Direcții naturale de continuare: persistarea cheii de identitate printr-o autoritate dedicată (SPIRE), un store FinOps/conformitate partajat pentru mai multe instanțe Nexus în paralel, și publicarea modulului `sdk/` ca pachet open-source independent (CI, versionare semantică, changelog).
+Natural directions to continue: persisting the identity key through a dedicated authority (SPIRE), a shared FinOps/compliance store for multiple Nexus instances running in parallel, and actually publishing the `sdk/` module as an independent open-source package (CI, semantic versioning, changelog).
