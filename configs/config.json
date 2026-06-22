@@ -1,0 +1,45 @@
+{
+  "listen_addr": ":8080",
+  "max_body_bytes": 2097152,
+  "read_header_timeout_seconds": 5,
+  "shutdown_timeout_seconds": 10,
+  "trust_domain": "nexus.trust",
+  "agents_file": "configs/agents.json",
+  "default_token_ttl_seconds": 300,
+  "max_token_ttl_seconds": 300,
+  "finops_policies_file": "configs/finops_policies.json",
+  "compliance_ledger_file": "data/compliance_ledger.jsonl",
+  "compliance_retention_months": 6,
+  "max_prompt_excerpt_bytes": 4096,
+  "upstreams": [
+    {
+      "name": "openai",
+      "path_prefix": "/v1/openai",
+      "target_url": "https://api.openai.com",
+      "strip_prefix": true,
+      "required_scope": "llm:openai:invoke",
+      "price_per_1k_tokens_usd": 0.01
+    },
+    {
+      "name": "anthropic",
+      "path_prefix": "/v1/anthropic",
+      "target_url": "https://api.anthropic.com",
+      "strip_prefix": true,
+      "required_scope": "llm:anthropic:invoke",
+      "price_per_1k_tokens_usd": 0.015
+    },
+    {
+      "name": "internal-tools",
+      "path_prefix": "/v1/internal",
+      "target_url": "http://localhost:9000",
+      "strip_prefix": true,
+      "required_scope": "tools:internal:invoke",
+      "price_per_1k_tokens_usd": 0,
+      "tool_scopes": {
+        "read_email": "tools:email:read",
+        "send_email": "tools:email:send",
+        "delete_email": "tools:email:delete"
+      }
+    }
+  ]
+}

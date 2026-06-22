@@ -1,0 +1,10 @@
+{
+  "default_max_ttl_seconds": 300,
+  "agents": [
+    {
+      "agent_id": "agent-demo-1",
+      "secret_hash": "e00bd621dc5eabbeb4c2a527d4bf38c606b2b47c8671cccfdb5e1289aad7627e",
+      "allowed_scopes": ["llm:openai:invoke", "tools:internal:invoke"]
+    }
+  ]
+}

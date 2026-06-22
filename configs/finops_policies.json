@@ -1,0 +1,11 @@
+{
+  "default_daily_budget_usd": 5.0,
+  "default_max_tokens_per_task": 50000,
+  "agents": [
+    {
+      "agent_id": "agent-demo-1",
+      "daily_budget_usd": 5.0,
+      "max_tokens_per_task": 20000
+    }
+  ]
+}
