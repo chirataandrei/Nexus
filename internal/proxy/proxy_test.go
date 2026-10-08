@@ -3,11 +3,14 @@ package proxy
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"nexus-gateway/internal/config"
 	"nexus-gateway/internal/parser"
@@ -189,11 +192,26 @@ type recordedSpend struct {
 }
 
 type fakeSpendRecorder struct {
+	mu    sync.Mutex
 	calls []recordedSpend
 }
 
 func (f *fakeSpendRecorder) RecordSpend(_ context.Context, meta *parser.RequestMeta, upstreamName string, price float64, body []byte) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.calls = append(f.calls, recordedSpend{meta: meta, upstreamName: upstreamName, price: price, body: body})
+}
+
+func (f *fakeSpendRecorder) count() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.calls)
+}
+
+func (f *fakeSpendRecorder) first() recordedSpend {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls[0]
 }
 
 func TestServer_InvokesSpendRecorderWithResponseBodyIntact(t *testing.T) {
@@ -361,5 +379,59 @@ func TestServer_FailClosedAuditRefusesBeforeForwarding(t *testing.T) {
 		if rec.Code != tc.want || hits.Load() != tc.hits || sink.recorded.Load() != 1 {
 			t.Errorf("%s: status=%d hits=%d recorded=%d", tc.name, rec.Code, hits.Load(), sink.recorded.Load())
 		}
+	}
+}
+
+// Streamed (SSE) responses must reach the client as they are produced, not
+// when the upstream finally closes — MCP's Streamable HTTP and LLM
+// streaming both depend on it — and their usage must still be metered.
+func TestServer_StreamsSSEWithoutBufferingAndMetersUsage(t *testing.T) {
+	release := make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fl := w.(http.Flusher)
+		_, _ = w.Write([]byte("data: {\"delta\":\"hel\"}\n\n"))
+		fl.Flush()
+		<-release // the stream stays open until the test lets it finish
+		_, _ = w.Write([]byte("data: {\"usage\":{\"total_tokens\":42}}\n\ndata: [DONE]\n\n"))
+	}))
+	defer upstream.Close()
+
+	cfg := &config.Config{
+		ListenAddr: ":0",
+		Upstreams:  []config.Upstream{{Name: "llm", PathPrefix: "/v1/llm", TargetURL: upstream.URL, StripPrefix: true, PricePerThousandTokensUSD: 0.01}},
+	}
+	spend := &fakeSpendRecorder{}
+	srv, err := NewServer(cfg, nil, nil, spend, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gw := httptest.NewServer(srv.Handler())
+	defer gw.Close()
+
+	resp, err := http.Get(gw.URL + "/v1/llm/stream") // returns once headers arrive
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	buf := make([]byte, 64)
+	n, err := resp.Body.Read(buf)
+	if err != nil || !strings.Contains(string(buf[:n]), "hel") {
+		t.Fatalf("first event did not arrive while the stream was open: %q %v", buf[:n], err)
+	}
+
+	close(release)
+	rest, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(rest), "[DONE]") {
+		t.Errorf("rest of the stream altered or missing: %q", rest)
+	}
+	resp.Body.Close()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && spend.count() == 0 {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if spend.count() != 1 || !strings.Contains(string(spend.first().body), `"total_tokens":42`) {
+		t.Fatalf("streamed usage not metered: %d calls", spend.count())
 	}
 }

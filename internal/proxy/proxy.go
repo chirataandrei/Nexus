@@ -22,6 +22,7 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"nexus-gateway/internal/config"
@@ -246,6 +247,11 @@ type statusRecorder struct {
 	status int
 }
 
+// Unwrap lets http.ResponseController (used by httputil.ReverseProxy to
+// flush streamed responses) reach the real writer; without it a
+// text/event-stream response would sit in the buffer until it ended.
+func (r *statusRecorder) Unwrap() http.ResponseWriter { return r.ResponseWriter }
+
 func (r *statusRecorder) WriteHeader(code int) {
 	r.status = code
 	r.ResponseWriter.WriteHeader(code)
@@ -272,6 +278,21 @@ func makeSpendCapture(upstreamName string, pricePerKTokens float64, spend SpendR
 			return nil
 		}
 
+		// A server-sent-events stream (MCP's Streamable HTTP, LLM streaming)
+		// has no end to wait for: buffering it would stall the client. Pass
+		// it through as it arrives and meter it when it finishes.
+		if strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream") {
+			resp.Body = &spendTeeBody{
+				ReadCloser: resp.Body,
+				done: func(tail []byte) {
+					if payload, ok := lastSSEUsagePayload(tail); ok {
+						spend.RecordSpend(resp.Request.Context(), meta, upstreamName, pricePerKTokens, payload)
+					}
+				},
+			}
+			return nil
+		}
+
 		body, err := io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
 		if err != nil {
@@ -282,4 +303,56 @@ func makeSpendCapture(upstreamName string, pricePerKTokens float64, spend SpendR
 		spend.RecordSpend(resp.Request.Context(), meta, upstreamName, pricePerKTokens, body)
 		return nil
 	}
+}
+
+// sseTailBytes is how much of the end of a stream is kept to find the
+// final usage report (providers send it in the last data event).
+const sseTailBytes = 64 * 1024
+
+// spendTeeBody forwards a streamed body unchanged while remembering its
+// tail, and calls done with that tail exactly once when the stream ends or
+// the client goes away.
+type spendTeeBody struct {
+	io.ReadCloser
+	tail []byte
+	once sync.Once
+	done func(tail []byte)
+}
+
+func (b *spendTeeBody) Read(p []byte) (int, error) {
+	n, err := b.ReadCloser.Read(p)
+	if n > 0 {
+		b.tail = append(b.tail, p[:n]...)
+		if len(b.tail) > 2*sseTailBytes {
+			b.tail = append([]byte(nil), b.tail[len(b.tail)-sseTailBytes:]...)
+		}
+	}
+	if err != nil {
+		b.finish()
+	}
+	return n, err
+}
+
+func (b *spendTeeBody) Close() error {
+	b.finish()
+	return b.ReadCloser.Close()
+}
+
+func (b *spendTeeBody) finish() { b.once.Do(func() { b.done(b.tail) }) }
+
+// lastSSEUsagePayload returns the JSON of the last "data:" event in the
+// captured tail that reports token usage.
+func lastSSEUsagePayload(tail []byte) ([]byte, bool) {
+	lines := bytes.Split(tail, []byte("\n"))
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := bytes.TrimSpace(lines[i])
+		if !bytes.HasPrefix(line, []byte("data:")) {
+			continue
+		}
+		payload := bytes.TrimSpace(bytes.TrimPrefix(line, []byte("data:")))
+		if len(payload) > 0 && payload[0] == '{' && bytes.Contains(payload, []byte("usage")) {
+			return payload, true
+		}
+	}
+	return nil, false
 }
