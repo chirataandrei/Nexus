@@ -2,7 +2,8 @@
 // adds on top of calling an upstream directly. It starts a fake local
 // upstream and the gateway in-process, then drives both with the same
 // closed-loop load (N workers, each sending requests back to back) and
-// prints requests/second, p50, p95 and p99 for each path.
+// prints requests/second, p50, p95 and p99 for each path. The last
+// scenario includes the real compliance ledger with an fsync per record.
 package main
 
 import (
@@ -20,8 +21,10 @@ import (
 	"sync"
 	"time"
 
+	"nexus-gateway/internal/compliance"
 	"nexus-gateway/internal/config"
 	"nexus-gateway/internal/finops"
+	"nexus-gateway/internal/logging"
 	"nexus-gateway/internal/parser"
 	"nexus-gateway/internal/proxy"
 )
@@ -118,6 +121,20 @@ func main() {
 
 	plain, _ := proxy.NewServer(cfg, nil, nil, nil, discard{})
 	full, _ := proxy.NewServer(cfg, fixedAgent{}, finops.NewEnforcer(policies, ledger), finops.NewRecorder(ledger), discard{})
+
+	// The real compliance ledger: every request writes request_received and
+	// response_returned records, each durable on disk before it returns.
+	chain, err := compliance.OpenChain(filepath.Join(dir, "ledger.jsonl"), 6)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	defer chain.Close()
+	ledgerAudit := logging.Fanout(compliance.NewSink(chain, nil, 4096))
+	withLedger, _ := proxy.NewServer(cfg, fixedAgent{}, finops.NewEnforcer(policies, ledger), finops.NewRecorder(ledger), ledgerAudit)
+	gwLedger := httptest.NewServer(withLedger.Handler())
+	defer gwLedger.Close()
+
 	gwPlain := httptest.NewServer(plain.Handler())
 	defer gwPlain.Close()
 	gwFull := httptest.NewServer(full.Handler())
@@ -131,6 +148,7 @@ func main() {
 		run("direct (no gateway)", upstream.URL+"/v1/llm", *workers, *dur, body),
 		run("gateway: proxy + parse", gwPlain.URL+"/v1/llm", *workers, *dur, body),
 		run("gateway: + FinOps budget/spend", gwFull.URL+"/v1/llm", *workers, *dur, body),
+		run("gateway: + FinOps + ledger fsync", gwLedger.URL+"/v1/llm", *workers, *dur, body),
 	}
 	fmt.Printf("workers=%d duration=%s body=%dB\n\n", *workers, *dur, len(body))
 	fmt.Printf("%-34s %10s %10s %10s %10s %10s\n", "scenario", "req/s", "p50", "p95", "p99", "added p50")

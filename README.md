@@ -64,7 +64,7 @@ A simple dashboard is available at `GET /nexus/finops/dashboard`, plus an API at
 
 ## Compliance and kill switch
 
-Every request generates a record in `internal/compliance.Chain`, which includes its own hash and the hash of the previous record — a local mini-blockchain, written strictly by appending, with `fsync` on every write. Any retroactive change (editing, deleting, reordering) breaks the hash chain and is detectable: `OpenChain` fully re-verifies the existing chain at startup, and if it was modified outside the gateway, startup is refused.
+Every request generates a record in `internal/compliance.Chain`, which includes its own hash and the hash of the previous record — a local mini-blockchain, written strictly by appending, durable (`fsync`) before each write returns. Concurrent writers share one `fsync` (group commit), so the guarantee per record is unchanged while the number of syncs drops under load. Any retroactive change (editing, deleting, reordering) breaks the hash chain and is detectable: `OpenChain` fully re-verifies the existing chain at startup, and if it was modified outside the gateway, startup is refused.
 
 `internal/compliance.Sink` logs, for every request: the verified identity *and* the claimed one, the tool/upstream called, the final decision, status, duration, today's cumulative spend, and the prompt (full SHA-256 digest + a configurable, truncated readable excerpt). The minimum 6-month retention is enforced at the configuration level.
 
@@ -88,7 +88,18 @@ An operator can instantly and globally suspend an agent: `POST /nexus/control/su
 | gateway: proxy + parse | 75k | 566 µs | 1.42 ms | 1.89 ms |
 | gateway: + FinOps budget/spend | 77k | 568 µs | 1.35 ms | 1.82 ms |
 
-The gateway adds roughly **0.3 ms at p50** and **under 1 ms at p99**. Compliance-chain `fsync` per request is not included (it's disk-bound).
+The first three rows discard audit records. The gateway itself adds roughly **0.3 ms at p50** and **under 1 ms at p99**.
+
+With the real compliance ledger on (every request writes two records, each durable on disk before the request continues) the picture is very different, because the cost is the disk, not the CPU:
+
+| scenario (FinOps + ledger `fsync`) | req/s | p50 | p99 |
+|---|---|---|---|
+| one `fsync` per record (before group commit), 50 workers | 129 | 387 ms | 435 ms |
+| group commit, 10 workers | 485 | 20 ms | 29 ms |
+| group commit, 50 workers | 713 | 70 ms | 113 ms |
+| group commit, 200 workers | 1,173 | 152 ms | 330 ms |
+
+Group commit made the ledger about 5.5× faster at 50 workers, and throughput keeps rising with concurrency because more records share each sync. It is still **disk-bound**: these numbers come from a MacBook, where Go's `File.Sync` issues `F_FULLFSYNC` (a real flush of the drive cache, ~10 ms) — Linux `fsync` on a server SSD is typically one to two orders of magnitude cheaper, so expect a much smaller gap there. Measure on your own hardware with `make bench`. If you cannot afford a durable write per request, the knob is the guarantee itself (not offered yet), not a faster benchmark.
 
 The test suite runs under `go test -race` in CI, including a test that fires 500 simultaneous requests for one agent and asserts that exactly `daily_budget / max_cost_per_request` of them reach the upstream. That guarantee needs `max_cost_per_request_usd` (per agent, or `default_max_cost_per_request_usd`) to be set: it reserves the worst-case cost of in-flight requests. Without it, the budget is only checked against already-recorded spend, so a burst can overshoot it.
 
