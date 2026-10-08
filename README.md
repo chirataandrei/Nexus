@@ -76,7 +76,7 @@ An operator can instantly and globally suspend an agent: `POST /nexus/control/su
 
 ## SDK for developers
 
-`sdk/` is a separate Go module, with no dependency on the server's code (`internal/`), that automatically handles identity bootstrap, caching, and refreshing of the JWT-SVID token. It can plug into any existing SDK through a drop-in `*http.Client` (`client.HTTPClient()`). See [`sdk/README.md`](sdk/README.md) for installation and full examples, and `sdk/examples/basic` for a runnable program.
+`sdk/` is a separate Go module (`go get github.com/chirataandrei/Nexus/sdk`), with no dependency on the server's code (`internal/`), that automatically handles identity bootstrap, caching, and refreshing of the JWT-SVID token. It can plug into any existing SDK through a drop-in `*http.Client` (`client.HTTPClient()`). See [`sdk/README.md`](sdk/README.md) for installation and full examples, and `sdk/examples/basic` for a runnable program.
 
 ## Performance
 
@@ -201,7 +201,7 @@ Fuzz targets (`go test -fuzz=FuzzParse ./internal/parser`, `-fuzz=FuzzVerify` an
 
 ## Next steps
 
-Natural directions to continue: managing the identity key through a dedicated authority (SPIRE) or an HSM/KMS, publishing ledger anchors to an external append-only store (transparency log / object-lock bucket), proof-of-possession tokens (DPoP/mTLS), a shared FinOps/compliance store for multiple Nexus instances running in parallel, and actually publishing the `sdk/` module as an independent open-source package (CI, semantic versioning, changelog).
+Natural directions to continue: managing the identity key through a dedicated authority (SPIRE) or an HSM/KMS, publishing ledger anchors to an external append-only store (transparency log / object-lock bucket), proof-of-possession tokens (DPoP/mTLS), a shared FinOps/compliance store for multiple Nexus instances running in parallel, and a changelog for the `sdk/` module (it is already installable with `go get github.com/chirataandrei/Nexus/sdk`).
 
 ## License
 

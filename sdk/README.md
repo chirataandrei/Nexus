@@ -7,10 +7,10 @@ An independent Go module, with no dependency on the Nexus server's code — just
 ## Installation
 
 ```bash
-go get github.com/nexus-trust-protocol/sdk-go
+go get github.com/chirataandrei/Nexus/sdk@latest
 ```
 
-(In this repo, the module lives at `gateway/sdk` — to use it locally without publishing it, add a `replace` directive to your project's `go.mod`: `replace github.com/nexus-trust-protocol/sdk-go => /path/to/gateway/sdk`.)
+The module lives in the `sdk/` directory of the repository and is versioned with `sdk/vX.Y.Z` tags (for example `sdk/v0.1.0`). To work against a local checkout instead, add `replace github.com/chirataandrei/Nexus/sdk => /path/to/Nexus/sdk` to your `go.mod`.
 
 ## 60-second usage
 
@@ -20,7 +20,7 @@ package main
 import (
 	"net/http"
 
-	nexussdk "github.com/nexus-trust-protocol/sdk-go"
+	nexussdk "github.com/chirataandrei/Nexus/sdk"
 )
 
 func main() {

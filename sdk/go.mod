@@ -1,3 +1,3 @@
-module github.com/nexus-trust-protocol/sdk-go
+module github.com/chirataandrei/Nexus/sdk
 
 go 1.22

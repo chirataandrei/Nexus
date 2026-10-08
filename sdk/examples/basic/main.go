@@ -18,7 +18,7 @@ import (
 	"log"
 	"net/http"
 
-	nexussdk "github.com/nexus-trust-protocol/sdk-go"
+	nexussdk "github.com/chirataandrei/Nexus/sdk"
 )
 
 func main() {
