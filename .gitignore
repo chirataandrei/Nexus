@@ -5,3 +5,4 @@
 *.go.[0-9]*
 /data/*.key.json
 /data/*.anchors.jsonl
+/configs/*.local.json
