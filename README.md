@@ -1,14 +1,22 @@
 # Nexus Trust Protocol — Gateway
 
+[![CI](https://github.com/chirataandrei/Nexus/actions/workflows/ci.yml/badge.svg)](https://github.com/chirataandrei/Nexus/actions/workflows/ci.yml)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+
 A Layer 7 reverse proxy written in Go (standard library only, no external dependencies) that sits between AI agents and LLM models / internal services. It eliminates static API keys (each agent gets an ephemeral cryptographic identity, inspired by WIMSE/SPIFFE), enforces real-time per-agent budgets, writes every request to a tamper-evident ledger, and natively recognizes the Model Context Protocol (MCP).
 
 ## Project structure
 
 ```
-gateway/
+./                     repository root
   go.work               Go workspace: links the gateway module to the sdk module
   cmd/nexus-gateway/    entry point (main.go)
-  cmd/nexus-agentctl/   dev utility: generates secret_hash for agents.json
+  cmd/nexus-agentctl/   dev utility: secret_hash for agents.json, admin token, key inspection
+  cmd/nexus-bench/      latency/throughput benchmark (make bench)
+  cmd/nexus-demo-upstream/  fake LLM used by scripts/demo.sh
+  scripts/demo.sh       60-second end-to-end demo (make demo)
+  internal/keystore/    persisted Ed25519 keys + kid (identity, ledger anchors)
+  internal/admin/       admin-token auth for the operator endpoints
   internal/config/      configuration loading and validation (JSON)
   internal/parser/      REST/JSON-RPC/MCP detection, metadata extraction
   internal/mcp/         MCP method recognition, tool name extraction
@@ -20,6 +28,7 @@ gateway/
   sdk/                  Go client SDK, a separate Go module (sdk/go.mod)
     examples/basic/      example use of the SDK
   docs/MCP.md           how MCP compatibility + per-tool scopes work
+  docs/THREAT_MODEL.md  assets, attackers, mitigations, residual risks
   data/                              compliance chain (generated at runtime, git-ignored)
   configs/config.json                example gateway configuration
   configs/agents.json                 example agent registry
@@ -38,13 +47,20 @@ No long-lived secret ever travels to the upstreams. An agent does a one-time "bo
 
 `internal/identity.SPIFFEValidator` automatically rejects any request without an `Authorization: Bearer <token>` header, with an invalid or expired signature, from a different trust domain, or without the scope the route explicitly requires. The agent registry (`configs/agents.json`) defines `allowed_scopes` per agent — any requested scope not in `allowed_scopes` is rejected with `403` (anti-privilege-escalation). `parser.RequestMeta` distinguishes `AgentID` (an unsafe header, debugging only) from `VerifiedAgentID`/`SPIFFEID`/`VerifiedScopes` (populated only after a successful cryptographic check).
 
+**Token lifecycle and abuse resistance** (details and residual risks in [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md)):
+
+- *Persisted key, rotation.* The signing key lives in `identity_key_file` (mode 0600, created on first start), so tokens survive restarts. Every token carries a `kid`; to rotate, replace the key file and list the old public key (`nexus-agentctl -show-pubkey <old key file>`) in `identity_retired_keys_file` until old tokens expire. An unknown `kid` is rejected.
+- *Stolen token.* A token is a bearer credential: whoever holds it can use it until `exp` (5 min by default) — or until an operator revokes it. Every token has a unique `jti`, recorded in the ledger on each request; `POST /nexus/control/revoke {"jti": ...}` blocks that one token immediately, and `POST /nexus/control/suspend` blocks the whole agent. Scopes are least-privilege and tokens are bound to one `task_id`.
+- *Brute force on `/nexus/identity/token`.* Failed attempts are limited per client IP (20/min) and per agent+IP (5/min) with `429` + `Retry-After`; unknown agents count as failures too, so enumeration is limited. Secrets are stored as salted **PBKDF2-HMAC-SHA256** (600k iterations, `pbkdf2-sha256$...`), compared in constant time, and an unknown agent costs the same work as a wrong secret. Legacy bare-sha256 entries still load but log a warning.
+- *Operator endpoints* (`/nexus/control/*`, `/nexus/finops/policies`) require `Authorization: Bearer <admin token>`; only its SHA-256 is in the config (`nexus-agentctl -gen-admin-token`).
+
 Different tools behind the same MCP upstream can require different permissions: `config.Upstream.ToolScopes` (a `tool_name -> scope` map) lets, for example, `read_email` require `tools:email:read` and `delete_email` require `tools:email:delete`, even though both go through the same upstream.
 
 ## Budget (the FinOps router)
 
 Before a request reaches the LLM, `internal/finops.Enforcer` checks the in-memory `Ledger` to see whether the agent has already exhausted its daily budget or the current task's token limit — if so, the request is rejected with `429`, without consuming a single costly token. `internal/finops.Recorder` reads `usage` from the LLM's response (OpenAI/Anthropic) through the reverse proxy's `ModifyResponse`, and updates the ledger without altering the response sent to the agent. `max_tokens_per_task` caps the tokens accumulated within a single task, no matter how many separate requests the agent makes — a direct circuit breaker against recurring hallucination loops.
 
-A simple dashboard is available at `GET /nexus/finops/dashboard`, plus an API at `/nexus/finops/usage` and `/nexus/finops/policies`.
+A simple dashboard is available at `GET /nexus/finops/dashboard`, plus an API at `/nexus/finops/usage` (read-only, unauthenticated — keep it on an internal network) and `/nexus/finops/policies` (admin token).
 
 ## Compliance and kill switch
 
@@ -52,32 +68,57 @@ Every request generates a record in `internal/compliance.Chain`, which includes 
 
 `internal/compliance.Sink` logs, for every request: the verified identity *and* the claimed one, the tool/upstream called, the final decision, status, duration, today's cumulative spend, and the prompt (full SHA-256 digest + a configurable, truncated readable excerpt). The minimum 6-month retention is enforced at the configuration level.
 
+**Tamper evidence, and what it does not cover.** A hash chain alone cannot survive someone who rewrites the whole file: they can edit a record and recompute every hash after it, and the chain still verifies. So the head of the chain is periodically **signed with an Ed25519 anchor key** (`compliance_anchor_key_file`, separate from the identity key) and appended to a separate anchors file (`compliance_anchor_file` — put it on another volume; each anchor is also logged on stdout so a log shipper keeps a second copy). Anchors are chained to each other and carry a `kid`. At startup, and on `GET /nexus/compliance/verify`, the ledger must match every anchor: an edited, rewritten, truncated or deleted ledger is detected, and the gateway refuses to start. The residual exposure is the interval since the last anchor (records after it are covered by the chain only), and an attacker who holds the anchor key or can wipe the ledger *and* the anchors file together; see the threat model.
+
+**Fail-open vs. fail-closed.** If the ledger can't be written, by default (`compliance_fail_closed: false`) the error is logged and the request proceeds — availability over completeness. With `compliance_fail_closed: true`, the request record is written *before* forwarding and a failure returns `503` without contacting the upstream — no un-audited call can happen. Response/rejection records are written after the fact, so a failure there can only be logged.
+
 An operator can instantly and globally suspend an agent: `POST /nexus/control/suspend|resume`, `GET /nexus/control/suspended` — requests using an already-issued token and the issuance of new tokens are both blocked immediately, and each action is itself recorded in the chain. `GET /nexus/compliance/verify` confirms the history's integrity at any time.
 
 ## SDK for developers
 
 `sdk/` is a separate Go module, with no dependency on the server's code (`internal/`), that automatically handles identity bootstrap, caching, and refreshing of the JWT-SVID token. It can plug into any existing SDK through a drop-in `*http.Client` (`client.HTTPClient()`). See [`sdk/README.md`](sdk/README.md) for installation and full examples, and `sdk/examples/basic` for a runnable program.
 
+## Performance
+
+`make bench` (`cmd/nexus-bench`) drives a fake local upstream directly and through the gateway with the same closed-loop load (50 concurrent workers, 10 s per scenario, JSON-RPC body, loopback, audit output discarded). Measured on an Apple Silicon laptop (client, gateway and upstream share the same machine, so absolute numbers are indicative):
+
+| scenario | req/s | p50 | p95 | p99 |
+|---|---|---|---|---|
+| direct (no gateway) | 133k | 243 µs | 710 µs | 1.11 ms |
+| gateway: proxy + parse | 75k | 566 µs | 1.42 ms | 1.89 ms |
+| gateway: + FinOps budget/spend | 77k | 568 µs | 1.35 ms | 1.82 ms |
+
+The gateway adds roughly **0.3 ms at p50** and **under 1 ms at p99**. Compliance-chain `fsync` per request is not included (it's disk-bound).
+
+The test suite runs under `go test -race` in CI, including a test that fires 500 simultaneous requests for one agent and asserts that exactly `daily_budget / max_cost_per_request` of them reach the upstream. That guarantee needs `max_cost_per_request_usd` (per agent, or `default_max_cost_per_request_usd`) to be set: it reserves the worst-case cost of in-flight requests. Without it, the budget is only checked against already-recorded spend, so a burst can overshoot it.
+
 ## Known limitations
 
-- The identity authority's Ed25519 key is generated in memory at startup — a restart invalidates previously issued tokens.
+- Token revocations and the kill-switch list are in memory; a restart clears them (tokens still expire within their TTL). The identity key is a local file, not an HSM/SPIRE-managed key.
+- A token is a bearer credential: it is not bound to a TLS channel or a client key (no DPoP/mTLS), so a stolen token works until `exp` or revocation.
+- The gateway doesn't terminate TLS or trust `X-Forwarded-For`; run it behind a TLS proxy on a private network, and note per-IP limits then see the proxy's address unless it's the direct peer.
+- Ledger records after the last signed anchor are protected by the hash chain only.
+- Without `max_cost_per_request_usd`, a burst of simultaneous requests can overshoot the daily budget (spend is recorded after the response).
 - The FinOps `Ledger` lives in a single process's memory — multiple Nexus instances running in parallel would need a shared store (e.g. Redis).
 - The compliance chain is a single local file on a single instance; writes are fail-open on error; there's no automatic purging once retention expires.
 - The non-custodial wallet integration (Locus, Skyfire) mentioned in the original proposal remains out of scope for now.
-- MCP compatibility recognizes the shape of JSON-RPC messages; it doesn't implement a full MCP server/client (handshake, capability negotiation, SSE/stdio transport); JSON-RPC batch requests aren't unpacked individually.
+- MCP compatibility recognizes the shape of JSON-RPC messages; it doesn't implement a full MCP server/client (handshake, capability negotiation, SSE/stdio transport); JSON-RPC batch requests are rejected with `400` because per-tool scopes can only be enforced one call at a time.
+
+## Demo
+
+`make demo` (or `./scripts/demo.sh`) runs everything below against a fake upstream in a temp directory, in about a minute: a request with no identity is refused, the agent trades its secret for a JWT-SVID, five calls pass, the sixth hits the budget (`429`), an operator suspends the agent with the admin token (existing token and new-token requests are both refused), and the ledger verifies with its signed anchors.
 
 ## Running locally
 
 Requires Go 1.22+.
 
 ```bash
-cd gateway
 go build ./...
 go test ./... ./sdk/...     # gateway + sdk
 go run ./cmd/nexus-gateway -config configs/config.json
 ```
 
-`go.work` at the root of `gateway/` links the two Go modules (the gateway itself and the client SDK) so commands like `go test ./... ./sdk/...` work from a single place, without the two being coupled at the code level — the SDK doesn't import anything from `internal/`.
+`go.work` at the repository root links the two Go modules (the gateway itself and the client SDK) so commands like `go test ./... ./sdk/...` work from a single place, without the two being coupled at the code level — the SDK doesn't import anything from `internal/`.
 
 By default, the gateway listens on `:8080`, the trust domain is `nexus.trust`, the compliance retention is 6 months, and it routes:
 
@@ -90,7 +131,8 @@ By default, the gateway listens on `:8080`, the trust domain is `nexus.trust`, t
 ### 1. Register an agent and request a JWT-SVID
 
 ```bash
-go run ./cmd/nexus-agentctl -agent-id agent-demo-1 -secret "a-secret" -scopes "llm:openai:invoke"
+go run ./cmd/nexus-agentctl -agent-id agent-demo-1 -gen-secret -scopes "llm:openai:invoke"
+# prints a generated secret once (stderr) and the PBKDF2 entry; use -secret "a-secret" to choose your own
 # copy the result into configs/agents.json
 
 TOKEN=$(curl -s -X POST http://localhost:8080/nexus/identity/token \
@@ -108,24 +150,31 @@ client := nexussdk.New("http://localhost:8080", "agent-demo-1", "a-secret", "tas
 resp, err := client.Do(req) // automatically attaches Authorization: Bearer <token>
 ```
 
-### 2. Kill switch
+### 2. Kill switch and token revocation
+
+Operator endpoints need the admin token. Generate yours with `go run ./cmd/nexus-agentctl -gen-admin-token` and put the printed `admin_token_sha256` in `configs/config.json` (the committed value belongs to a throwaway token nobody has).
 
 ```bash
-curl -X POST http://localhost:8080/nexus/control/suspend \
-  -H "Content-Type: application/json" \
+ADMIN="Authorization: Bearer <your admin token>"
+
+curl -X POST http://localhost:8080/nexus/control/suspend -H "$ADMIN" \
   -d '{"agent_id":"agent-demo-1","reason":"abnormal behavior","operator":"andrei"}'
 
-curl http://localhost:8080/nexus/control/suspended
+curl http://localhost:8080/nexus/control/suspended -H "$ADMIN"
 
-curl -X POST http://localhost:8080/nexus/control/resume \
-  -H "Content-Type: application/json" -d '{"agent_id":"agent-demo-1","operator":"andrei"}'
+curl -X POST http://localhost:8080/nexus/control/resume -H "$ADMIN" \
+  -d '{"agent_id":"agent-demo-1","operator":"andrei"}'
+
+# block one stolen token (its jti is in the ledger records) without suspending the agent
+curl -X POST http://localhost:8080/nexus/control/revoke -H "$ADMIN" \
+  -d '{"jti":"<jti>","reason":"token leaked","operator":"andrei"}'
 ```
 
 ### 3. Verify the compliance ledger's integrity
 
 ```bash
 curl http://localhost:8080/nexus/compliance/verify
-# {"ok": true, "verified_records": N}
+# {"ok": true, "verified_records": N, "verified_anchors": M}
 ```
 
 ### 4. FinOps dashboard
@@ -136,8 +185,14 @@ http://localhost:8080/nexus/finops/dashboard
 
 ## Tests
 
+Fuzz targets (`go test -fuzz=FuzzParse ./internal/parser`, `-fuzz=FuzzVerify` and `-fuzz=FuzzVerifySecret` in `internal/identity`) cover the request parser, the token verifier and the stored-hash decoder; CI runs each for a short burst. A regression test builds a consistently rewritten ledger — which `VerifyChain` accepts — and checks that the signed anchors reject it.
+
 `go test ./... ./sdk/... -v` runs the full suite (parser, proxy, identity, finops, compliance, config, MCP, SDK client). It covers, among other things: rejecting a compliance chain with tampered content or a record deleted from the middle, anti-privilege-escalation for scopes, a loop of repeated requests blocked exactly at the budget limit, a suspended agent rejected both at validation and when requesting a new token, recognition of MCP methods and the priority of per-tool scopes over the upstream's generic one, and the SDK client (token caching, automatic refresh, `Authorization` injection through `Do` and through `HTTPClient()`).
 
 ## Next steps
 
-Natural directions to continue: persisting the identity key through a dedicated authority (SPIRE), a shared FinOps/compliance store for multiple Nexus instances running in parallel, and actually publishing the `sdk/` module as an independent open-source package (CI, semantic versioning, changelog).
+Natural directions to continue: managing the identity key through a dedicated authority (SPIRE) or an HSM/KMS, publishing ledger anchors to an external append-only store (transparency log / object-lock bucket), proof-of-possession tokens (DPoP/mTLS), a shared FinOps/compliance store for multiple Nexus instances running in parallel, and actually publishing the `sdk/` module as an independent open-source package (CI, semantic versioning, changelog).
+
+## License
+
+Apache-2.0 — see [`LICENSE`](LICENSE).
