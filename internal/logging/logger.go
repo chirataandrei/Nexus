@@ -20,6 +20,15 @@ type AuditSink interface {
 	RecordRejection(meta *parser.RequestMeta, reason string)
 }
 
+// StrictRequestRecorder is optionally implemented by an AuditSink that
+// can refuse a request: RecordRequestStrict returns an error when the
+// record could not be durably stored AND the sink is configured to fail
+// closed. The proxy calls it before forwarding and answers 503 on error,
+// so no request reaches an upstream without its audit record.
+type StrictRequestRecorder interface {
+	RecordRequestStrict(meta *parser.RequestMeta, upstream string) error
+}
+
 // StdoutLogger is a minimal AuditSink implementation that writes
 // structured JSON events to stdout using the standard library's
 // log/slog.
@@ -113,4 +122,21 @@ func (m *multiSink) RecordRejection(meta *parser.RequestMeta, reason string) {
 	for _, s := range m.sinks {
 		s.RecordRejection(meta, reason)
 	}
+}
+
+// RecordRequestStrict records the request on every sink; sinks that
+// implement StrictRequestRecorder may veto it. All sinks are still
+// called, so the other logs see the attempt.
+func (m *multiSink) RecordRequestStrict(meta *parser.RequestMeta, upstream string) error {
+	var first error
+	for _, s := range m.sinks {
+		if st, ok := s.(StrictRequestRecorder); ok {
+			if err := st.RecordRequestStrict(meta, upstream); err != nil && first == nil {
+				first = err
+			}
+			continue
+		}
+		s.RecordRequest(meta, upstream)
+	}
+	return first
 }

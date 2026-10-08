@@ -94,7 +94,7 @@ func TestVerifyHandler_ReportsOKForFreshChain(t *testing.T) {
 	chain := newTestChain(t)
 	chain.Append(Record{Event: "request_received"})
 
-	handler := VerifyHandler(chain.path)
+	handler := VerifyHandler(chain.path, "", nil)
 	req := httptest.NewRequest(http.MethodGet, "/nexus/compliance/verify", nil)
 	rec := httptest.NewRecorder()
 	handler(rec, req)

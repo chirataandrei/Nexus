@@ -16,6 +16,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
+	"log/slog"
 	"os"
 	"sync"
 	"time"
@@ -41,6 +43,9 @@ type Record struct {
 	VerifiedAgentID string `json:"verified_agent_id,omitempty"`
 	TaskID          string `json:"task_id,omitempty"`
 	SPIFFEID        string `json:"spiffe_id,omitempty"`
+	// JTI is the unique ID of the token used (or revoked) — lets an
+	// auditor tie requests to a token, and an operator revoke it.
+	JTI string `json:"jti,omitempty"`
 
 	UpstreamName string `json:"upstream_name,omitempty"`
 	Tool         string `json:"tool,omitempty"` // the JSON-RPC/MCP method called, if any
@@ -81,6 +86,7 @@ type Chain struct {
 	lastHash        string
 	seq             int64
 	retentionMonths int
+	anchor          *anchorer // nil until EnableAnchoring
 }
 
 // OpenChain opens (or creates) the chain file at path. If the file
@@ -122,6 +128,9 @@ func OpenChain(path string, retentionMonths int) (*Chain, error) {
 func (c *Chain) Close() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if err := c.anchorLocked(); err != nil { // final anchor on clean shutdown
+		slog.Error("nexus.compliance.anchor_failed", "event", "anchor_failed", "error", err.Error())
+	}
 	return c.file.Close()
 }
 
@@ -136,8 +145,9 @@ func (c *Chain) Append(rec Record) (Record, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	c.seq++
-	rec.Sequence = c.seq
+	// seq and lastHash only advance once the record is durably written,
+	// so a failed write leaves no gap that would later break the chain.
+	rec.Sequence = c.seq + 1
 	if rec.Timestamp.IsZero() {
 		rec.Timestamp = time.Now().UTC()
 	}
@@ -150,14 +160,25 @@ func (c *Chain) Append(rec Record) (Record, error) {
 	}
 	line = append(line, '\n')
 
+	offset, _ := c.file.Seek(0, io.SeekEnd)
 	if _, err := c.file.Write(line); err != nil {
+		// A partial line would corrupt the chain; cut it off again.
+		_ = c.file.Truncate(offset)
 		return rec, fmt.Errorf("compliance: cannot write to chain %s: %w", c.path, err)
 	}
 	if err := c.file.Sync(); err != nil {
+		_ = c.file.Truncate(offset)
 		return rec, fmt.Errorf("compliance: cannot sync chain %s to disk: %w", c.path, err)
 	}
 
+	c.seq = rec.Sequence
 	c.lastHash = rec.Hash
+
+	if c.anchor != nil && c.anchor.every > 0 && c.seq%c.anchor.every == 0 {
+		if err := c.anchorLocked(); err != nil {
+			slog.Error("nexus.compliance.anchor_failed", "event", "anchor_failed", "error", err.Error())
+		}
+	}
 	return rec, nil
 }
 

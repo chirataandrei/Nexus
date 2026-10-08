@@ -25,7 +25,15 @@ type Sink struct {
 	chain           *Chain
 	costLookup      CostLookup
 	maxExcerptBytes int
+	failClosed      bool
 }
+
+// SetFailClosed controls what happens when a request's audit record
+// can't be written: false (default) logs the error and lets the request
+// through (availability over completeness); true makes
+// RecordRequestStrict fail, so the proxy refuses the request with 503
+// (completeness over availability — no un-audited calls).
+func (s *Sink) SetFailClosed(v bool) { s.failClosed = v }
 
 // NewSink builds a Sink. maxExcerptBytes controls how much of the
 // request body is copied as readable text into the chain (the SHA-256
@@ -40,8 +48,17 @@ func NewSink(chain *Chain, costLookup CostLookup, maxExcerptBytes int) *Sink {
 
 // RecordRequest implements logging.AuditSink.
 func (s *Sink) RecordRequest(meta *parser.RequestMeta, upstream string) {
+	_ = s.RecordRequestStrict(meta, upstream)
+}
+
+// RecordRequestStrict implements logging.StrictRequestRecorder. It
+// returns an error only if the write failed and the sink is fail-closed.
+func (s *Sink) RecordRequestStrict(meta *parser.RequestMeta, upstream string) error {
 	rec := s.baseRecord("request_received", meta, upstream)
-	s.append(rec)
+	if err := s.append(rec); err != nil && s.failClosed {
+		return err
+	}
+	return nil
 }
 
 // RecordResponse implements logging.AuditSink.
@@ -55,7 +72,7 @@ func (s *Sink) RecordResponse(meta *parser.RequestMeta, upstream string, statusC
 			rec.CumulativeSpendUSDToday = spent
 		}
 	}
-	s.append(rec)
+	_ = s.append(rec)
 }
 
 // RecordRejection implements logging.AuditSink.
@@ -63,7 +80,7 @@ func (s *Sink) RecordRejection(meta *parser.RequestMeta, reason string) {
 	rec := s.baseRecord("request_rejected", meta, meta.UpstreamName)
 	rec.Decision = "rejected"
 	rec.Reason = reason
-	s.append(rec)
+	_ = s.append(rec)
 }
 
 // baseRecord builds the fields shared by every event type, based on the
@@ -83,6 +100,7 @@ func (s *Sink) baseRecord(event string, meta *parser.RequestMeta, upstream strin
 		VerifiedAgentID: meta.VerifiedAgentID,
 		TaskID:          meta.VerifiedTaskID,
 		SPIFFEID:        meta.SPIFFEID,
+		JTI:             meta.VerifiedJTI,
 		UpstreamName:    upstream,
 		Tool:            tool,
 		HTTPMethod:      meta.Method,
@@ -113,20 +131,21 @@ func (s *Sink) baseRecord(event string, meta *parser.RequestMeta, upstream strin
 	return rec
 }
 
-func (s *Sink) append(rec Record) {
+func (s *Sink) append(rec Record) error {
 	if _, err := s.chain.Append(rec); err != nil {
-		// Documented decision: a write error to the compliance chain is
-		// logged with high severity, but does NOT block the response to
-		// the agent (fail-open). A production environment with strict
-		// compliance requirements should configure fail-closed (rejecting
-		// requests while the chain is unavailable) — explicitly marked as
-		// future work in the README.
+		// Default is fail-open: the error is logged with high severity but
+		// the request proceeds. With SetFailClosed(true) the *request*
+		// record (written before forwarding) vetoes the call; response and
+		// rejection records are written after the fact, so a failure there
+		// can only be logged.
 		slog.Error("nexus.compliance.chain_write_failed",
 			"event", "chain_write_failed",
 			"chain_event", rec.Event,
 			"error", err.Error(),
 		)
+		return err
 	}
+	return nil
 }
 
 func decisionForStatus(statusCode int) string {

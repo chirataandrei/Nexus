@@ -10,6 +10,8 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+
+	"nexus-gateway/internal/keystore"
 )
 
 const maxControlRequestBytes = 1 << 16
@@ -115,20 +117,71 @@ func SuspendedListHandler(registry *SuspensionRegistry) http.HandlerFunc {
 
 // VerifyHandler exposes GET /nexus/compliance/verify: it runs
 // VerifyChain on demand, so an auditor can confirm at any time that the
-// compliance chain hasn't been retroactively modified.
-func VerifyHandler(path string) http.HandlerFunc {
+// compliance chain hasn't been retroactively modified. If anchorPath is
+// set, it also checks the ledger against its signed anchors, which is
+// what detects a complete rewrite of the file.
+func VerifyHandler(path, anchorPath string, keys keystore.PublicKeySet) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			http.Error(w, "method not allowed, use GET", http.StatusMethodNotAllowed)
 			return
 		}
 		n, err := VerifyChain(path)
+		anchored := 0
+		if err == nil && anchorPath != "" {
+			var anchors []Anchor
+			anchors, err = VerifyAnchors(path, anchorPath, keys)
+			anchored = len(anchors)
+		}
 		w.Header().Set("Content-Type", "application/json")
 		if err != nil {
 			w.WriteHeader(http.StatusConflict)
 			_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "verified_records": n, "error": err.Error()})
 			return
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "verified_records": n})
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "verified_records": n, "verified_anchors": anchored})
+	}
+}
+
+// TokenRevoker is what RevokeHandler needs from the identity package's
+// revocation list (an interface, so compliance doesn't import identity).
+type TokenRevoker interface {
+	Revoke(jti string)
+}
+
+type revokeRequest struct {
+	JTI      string `json:"jti"`
+	Reason   string `json:"reason"`
+	Operator string `json:"operator,omitempty"`
+}
+
+// RevokeHandler exposes POST /nexus/control/revoke: it blocks one specific
+// token (by jti) immediately — the surgical alternative to suspending the
+// whole agent. The jti of a stolen token is in the ledger's records.
+func RevokeHandler(revoker TokenRevoker, chain *Chain) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed, use POST", http.StatusMethodNotAllowed)
+			return
+		}
+		var req revokeRequest
+		if err := json.NewDecoder(io.LimitReader(r.Body, maxControlRequestBytes)).Decode(&req); err != nil {
+			http.Error(w, "invalid JSON body", http.StatusBadRequest)
+			return
+		}
+		if req.JTI == "" || req.Reason == "" {
+			http.Error(w, "jti and reason are required", http.StatusBadRequest)
+			return
+		}
+		revoker.Revoke(req.JTI)
+		if _, err := chain.Append(Record{
+			Event: "token_revoked", JTI: req.JTI, Decision: "revoked",
+			SuspensionReason: req.Reason, Operator: req.Operator,
+		}); err != nil {
+			slog.Error("nexus.compliance.chain_write_failed", "event", "chain_write_failed", "context", "token_revoked", "error", err.Error())
+		}
+		slog.Warn("nexus.control.token_revoked", "event", "token_revoked", "jti", req.JTI, "reason", req.Reason, "operator", req.Operator)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"jti": req.JTI, "revoked": true})
 	}
 }
