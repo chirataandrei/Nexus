@@ -7,9 +7,27 @@ package finops
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"sync"
 )
+
+// FallbackMaxCostPerRequestUSD is the worst-case cost reserved per request
+// for a budgeted agent whose policy sets no max_cost_per_request_usd (and
+// the registry no default). The reservation is what makes the budget hold
+// under concurrency, so it is on unless a value is configured; the actual
+// reservation is min(daily budget, this). Configure a realistic figure to
+// allow more requests in flight.
+const FallbackMaxCostPerRequestUSD = 1.0
+
+// effective fills in the safe reservation for a budgeted policy that has
+// none, so a burst can never overshoot the budget by default.
+func effective(p AgentPolicy) AgentPolicy {
+	if p.DailyBudgetUSD > 0 && p.MaxCostPerRequestUSD <= 0 {
+		p.MaxCostPerRequestUSD = math.Min(p.DailyBudgetUSD, FallbackMaxCostPerRequestUSD)
+	}
+	return p
+}
 
 // AgentPolicy describes an agent's financial policy.
 type AgentPolicy struct {
@@ -26,7 +44,8 @@ type AgentPolicy struct {
 	// request completes), so concurrent in-flight requests can't
 	// collectively overshoot DailyBudgetUSD. 0 = no reservation: the
 	// budget is only checked against already-recorded spend, so a burst
-	// of simultaneous requests can exceed it.
+	// of simultaneous requests can exceed it. 0 is not "off" for a
+	// budgeted agent: it falls back to min(budget, FallbackMaxCostPerRequestUSD).
 	MaxCostPerRequestUSD float64 `json:"max_cost_per_request_usd"`
 }
 
@@ -82,15 +101,15 @@ func (r *PolicyRegistry) For(agentID string) AgentPolicy {
 	defer r.mu.RUnlock()
 
 	if p, ok := r.agents[agentID]; ok {
-		return p
+		return effective(p)
 	}
-	return AgentPolicy{
+	return effective(AgentPolicy{
 		AgentID:          agentID,
 		DailyBudgetUSD:   r.defaultDailyBudgetUSD,
 		MaxTokensPerTask: r.defaultMaxTokensPerTask,
 
 		MaxCostPerRequestUSD: r.defaultMaxCostPerReqUSD,
-	}
+	})
 }
 
 // Upsert adds or updates an agent's policy (used by the admin
@@ -108,6 +127,14 @@ func (r *PolicyRegistry) Upsert(p AgentPolicy) error {
 	defer r.mu.Unlock()
 	r.agents[p.AgentID] = p
 	return nil
+}
+
+// DefaultMaxCostPerRequestUSD is the registry-wide configured default
+// (0 if unset, in which case FallbackMaxCostPerRequestUSD applies).
+func (r *PolicyRegistry) DefaultMaxCostPerRequestUSD() float64 {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.defaultMaxCostPerReqUSD
 }
 
 // All returns a copy of every explicit policy, plus the registry's
