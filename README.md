@@ -2,6 +2,7 @@
 
 [![CI](https://github.com/chirataandrei/Nexus/actions/workflows/ci.yml/badge.svg)](https://github.com/chirataandrei/Nexus/actions/workflows/ci.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![Go Reference](https://pkg.go.dev/badge/github.com/chirataandrei/Nexus/sdk.svg)](https://pkg.go.dev/github.com/chirataandrei/Nexus/sdk)
 
 A Layer 7 reverse proxy written in Go (standard library only, no external dependencies) that sits between AI agents and LLM models / internal services. It eliminates static API keys (each agent gets an ephemeral cryptographic identity, inspired by WIMSE/SPIFFE), enforces real-time per-agent budgets, writes every request to a tamper-evident ledger, and recognizes Model Context Protocol (MCP) traffic and enforces per-tool scopes on it.
 
@@ -76,7 +77,7 @@ An operator can instantly and globally suspend an agent: `POST /nexus/control/su
 
 ## SDK for developers
 
-`sdk/` is a separate Go module (`go get github.com/chirataandrei/Nexus/sdk`), with no dependency on the server's code (`internal/`), that automatically handles identity bootstrap, caching, and refreshing of the JWT-SVID token. It can plug into any existing SDK through a drop-in `*http.Client` (`client.HTTPClient()`). See [`sdk/README.md`](sdk/README.md) for installation and full examples, and `sdk/examples/basic` for a runnable program.
+`sdk/` is a separate Go module (`go get github.com/chirataandrei/Nexus/sdk`, [docs on pkg.go.dev](https://pkg.go.dev/github.com/chirataandrei/Nexus/sdk), [release `sdk/v0.1.0`](https://github.com/chirataandrei/Nexus/releases/tag/sdk/v0.1.0)), with no dependency on the server's code (`internal/`), that automatically handles identity bootstrap, caching, and refreshing of the JWT-SVID token. It can plug into any existing SDK through a drop-in `*http.Client` (`client.HTTPClient()`). See [`sdk/README.md`](sdk/README.md) for installation and full examples, and `sdk/examples/basic` for a runnable program.
 
 ## Performance
 
