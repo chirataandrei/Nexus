@@ -46,6 +46,7 @@ func SuspendHandler(registry *SuspensionRegistry, chain *Chain) http.HandlerFunc
 
 		rec := registry.Suspend(req.AgentID, req.Reason, req.Operator)
 
+		persisted := true
 		if _, err := chain.Append(Record{
 			Event:            "agent_suspended",
 			VerifiedAgentID:  req.AgentID,
@@ -53,6 +54,7 @@ func SuspendHandler(registry *SuspensionRegistry, chain *Chain) http.HandlerFunc
 			SuspensionReason: req.Reason,
 			Operator:         req.Operator,
 		}); err != nil {
+			persisted = false
 			slog.Error("nexus.compliance.chain_write_failed", "event", "chain_write_failed", "context", "agent_suspended", "error", err.Error())
 		}
 
@@ -64,6 +66,15 @@ func SuspendHandler(registry *SuspensionRegistry, chain *Chain) http.HandlerFunc
 		)
 
 		w.Header().Set("Content-Type", "application/json")
+		if !persisted {
+			// The suspension is active now (security first), but it was not
+			// written to the ledger, so a restart would lose it. Tell the
+			// operator instead of reporting success.
+			w.WriteHeader(http.StatusInternalServerError)
+			_ = json.NewEncoder(w).Encode(map[string]any{"suspended": true, "persisted": false,
+				"error": "agent is suspended in memory but the ledger write failed; it will not survive a restart"})
+			return
+		}
 		_ = json.NewEncoder(w).Encode(rec)
 	}
 }
@@ -174,14 +185,22 @@ func RevokeHandler(revoker TokenRevoker, chain *Chain) http.HandlerFunc {
 			return
 		}
 		revoker.Revoke(req.JTI)
+		persisted := true
 		if _, err := chain.Append(Record{
 			Event: "token_revoked", JTI: req.JTI, Decision: "revoked",
 			SuspensionReason: req.Reason, Operator: req.Operator,
 		}); err != nil {
+			persisted = false
 			slog.Error("nexus.compliance.chain_write_failed", "event", "chain_write_failed", "context", "token_revoked", "error", err.Error())
 		}
 		slog.Warn("nexus.control.token_revoked", "event", "token_revoked", "jti", req.JTI, "reason", req.Reason, "operator", req.Operator)
 		w.Header().Set("Content-Type", "application/json")
+		if !persisted {
+			w.WriteHeader(http.StatusInternalServerError)
+			_ = json.NewEncoder(w).Encode(map[string]any{"jti": req.JTI, "revoked": true, "persisted": false,
+				"error": "token is revoked in memory but the ledger write failed; it will not survive a restart"})
+			return
+		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"jti": req.JTI, "revoked": true})
 	}
 }

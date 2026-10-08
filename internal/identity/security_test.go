@@ -206,3 +206,15 @@ func TestAuthenticate_UnknownAgentAndWrongSecretAreIndistinguishable(t *testing.
 		t.Fatal("both must fail")
 	}
 }
+
+func TestRevocationList_RestoreRevoked(t *testing.T) {
+	l := NewRevocationList()
+	l.RestoreRevoked("recent", time.Now().Add(-time.Hour))
+	l.RestoreRevoked("ancient", time.Now().Add(-48*time.Hour)) // token expired long ago
+	if !l.IsRevoked("recent") {
+		t.Error("a recent revocation must be restored")
+	}
+	if l.IsRevoked("ancient") {
+		t.Error("an expired token's revocation need not be kept")
+	}
+}

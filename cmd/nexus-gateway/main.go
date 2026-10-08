@@ -112,6 +112,16 @@ func main() {
 		log.Fatalf("nexus-gateway: %v", err)
 	}
 	revocations := identity.NewRevocationList()
+	// Suspensions and revocations are ledger records; replaying them makes
+	// the kill switch survive a restart. The chain was verified by
+	// OpenChain above, so this state cannot have been edited out of the file.
+	restored, err := compliance.RestoreState(cfg.ComplianceLedgerFile, suspensionRegistry, revocations)
+	if err != nil {
+		log.Fatalf("nexus-gateway: cannot restore security state from the ledger: %v", err)
+	}
+	if restored.Suspended > 0 || restored.Revoked > 0 {
+		log.Printf("nexus-gateway: restored from ledger: %d suspended agent(s), %d revocation record(s)", restored.Suspended, restored.Revoked)
+	}
 	validator := identity.NewSPIFFEValidator(issuer.PublicKey(), cfg.TrustDomain, suspensionRegistry).
 		WithRetiredKeys(retiredIdentityKeys).
 		WithRevocations(revocations)

@@ -48,6 +48,14 @@ func (r *SuspensionRegistry) Suspend(agentID, reason, operator string) Suspensio
 	return rec
 }
 
+// restore re-installs a suspension read back from the ledger, keeping
+// its original timestamp.
+func (r *SuspensionRegistry) restore(rec SuspensionRecord) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.suspended[rec.AgentID] = rec
+}
+
 // Resume lifts an agent's suspension. Returns false if the agent wasn't
 // suspended (a no-op, not an error).
 func (r *SuspensionRegistry) Resume(agentID string) bool {
