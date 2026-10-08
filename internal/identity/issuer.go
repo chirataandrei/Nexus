@@ -10,6 +10,8 @@ import (
 	"crypto/rand"
 	"fmt"
 	"time"
+
+	"nexus-gateway/internal/keystore"
 )
 
 // Issuer is the identity authority of a Nexus instance for a single
@@ -24,12 +26,9 @@ type Issuer struct {
 // NewIssuer generates a new Ed25519 key pair and builds an Issuer for
 // the given trust domain.
 //
-// Security note: the key is generated in memory at process startup and
-// is not persisted — restarting the gateway implicitly invalidates all
-// previously issued tokens (acceptable given the TTL is on the order of
-// minutes). In a production deployment, this key would be managed by a
-// dedicated authority (e.g. a SPIRE Server) with real rotation and
-// federation.
+// This variant keeps the key in memory only (tests, throwaway runs);
+// restarting invalidates every issued token. The gateway itself uses
+// NewIssuerWithKey with a key persisted by internal/keystore.
 func NewIssuer(trustDomain string, defaultTTL time.Duration) (*Issuer, error) {
 	if trustDomain == "" {
 		return nil, fmt.Errorf("identity: trust_domain is required")
@@ -45,6 +44,25 @@ func NewIssuer(trustDomain string, defaultTTL time.Duration) (*Issuer, error) {
 
 	return &Issuer{priv: priv, pub: pub, trustDomain: trustDomain, defaultTTL: defaultTTL}, nil
 }
+
+// NewIssuerWithKey builds an Issuer around a persisted key (see
+// keystore.LoadOrCreate), so tokens stay valid across restarts and the
+// key can be rotated deliberately.
+func NewIssuerWithKey(trustDomain string, defaultTTL time.Duration, priv ed25519.PrivateKey) (*Issuer, error) {
+	if trustDomain == "" {
+		return nil, fmt.Errorf("identity: trust_domain is required")
+	}
+	if len(priv) != ed25519.PrivateKeySize {
+		return nil, fmt.Errorf("identity: invalid Ed25519 private key")
+	}
+	if defaultTTL <= 0 {
+		defaultTTL = 5 * time.Minute
+	}
+	return &Issuer{priv: priv, pub: priv.Public().(ed25519.PublicKey), trustDomain: trustDomain, defaultTTL: defaultTTL}, nil
+}
+
+// KeyID returns the kid stamped on every token this issuer signs.
+func (iss *Issuer) KeyID() string { return keystore.KeyID(iss.pub) }
 
 // PublicKey returns the authority's public key, used by SPIFFEValidator
 // to verify token signatures.

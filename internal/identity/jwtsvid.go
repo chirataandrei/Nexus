@@ -18,6 +18,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"nexus-gateway/internal/keystore"
 )
 
 // Algorithm and TokenType identify the token's format in the JWT
@@ -33,6 +35,9 @@ const (
 type header struct {
 	Alg string `json:"alg"`
 	Typ string `json:"typ"`
+	// Kid identifies the signing key (see keystore.KeyID), so verifiers
+	// can pick the right public key during a rotation.
+	Kid string `json:"kid,omitempty"`
 }
 
 // Claims represents the contents of a JWT-SVID issued by Nexus for an
@@ -69,7 +74,7 @@ func Sign(priv ed25519.PrivateKey, claims Claims) (string, error) {
 		return "", errors.New("jwtsvid: invalid Ed25519 private key")
 	}
 
-	headerJSON, err := json.Marshal(header{Alg: Algorithm, Typ: TokenType})
+	headerJSON, err := json.Marshal(header{Alg: Algorithm, Typ: TokenType, Kid: keystore.KeyID(priv.Public().(ed25519.PublicKey))})
 	if err != nil {
 		return "", fmt.Errorf("jwtsvid: cannot serialize header: %w", err)
 	}
@@ -86,6 +91,25 @@ func Sign(priv ed25519.PrivateKey, claims Claims) (string, error) {
 	sigB64 := base64.RawURLEncoding.EncodeToString(signature)
 
 	return signingInput + "." + sigB64, nil
+}
+
+// TokenKeyID returns the kid in the token's header without verifying
+// anything ("" if absent or unreadable). The result selects which public
+// key to verify with; it is never trusted on its own.
+func TokenKeyID(token string) string {
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return ""
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(parts[0])
+	if err != nil {
+		return ""
+	}
+	var h header
+	if json.Unmarshal(raw, &h) != nil {
+		return ""
+	}
+	return h.Kid
 }
 
 // Verify validates a JWT-SVID's cryptographic signature and its

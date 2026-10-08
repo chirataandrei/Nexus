@@ -7,14 +7,17 @@
 package identity
 
 import (
-	"crypto/sha256"
-	"crypto/subtle"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"time"
 )
+
+// MaxTokenTTLCeiling is the longest token lifetime the gateway supports
+// (seconds). The revocation list keeps entries for this long, so no
+// token can outlive its revocation record.
+const MaxTokenTTLCeiling = 24 * 60 * 60
 
 // AgentRecord describes an AI agent registered with Nexus: its
 // identity, its bootstrap secret hash, and the maximum scopes it can
@@ -22,7 +25,7 @@ import (
 // privilege-escalation barrier).
 type AgentRecord struct {
 	AgentID string `json:"agent_id"`
-	// SecretHash is sha256("<agent_id>:<secret>") in hex — never the
+	// SecretHash is a salted PBKDF2 hash (see secret.go) — never the
 	// secret in plaintext. Generate it with cmd/nexus-agentctl.
 	SecretHash string `json:"secret_hash"`
 	// AllowedScopes is the agent's absolute permission ceiling.
@@ -103,6 +106,16 @@ func LoadRegistry(path string, fallbackDefaultMaxTTL time.Duration) (*Registry, 
 		if _, dup := reg.agents[a.AgentID]; dup {
 			return nil, fmt.Errorf("identity: duplicate agent_id in registry: %s", a.AgentID)
 		}
+		if isLegacyHash(a.SecretHash) {
+			slog.Warn("nexus.identity.legacy_secret_hash",
+				"event", "legacy_secret_hash",
+				"agent_id", a.AgentID,
+				"hint", "regenerate this entry with nexus-agentctl to upgrade it to PBKDF2",
+			)
+		}
+		if a.MaxTTLSeconds > MaxTokenTTLCeiling {
+			return nil, fmt.Errorf("identity: agent %s max_ttl_seconds exceeds %d", a.AgentID, MaxTokenTTLCeiling)
+		}
 		reg.agents[a.AgentID] = a
 	}
 
@@ -119,27 +132,22 @@ func (r *Registry) DefaultMaxTTL() time.Duration {
 }
 
 // Authenticate checks the (agentID, secret) pair against the registry.
-// The comparison is always done via hash + constant-time compare, even
-// for nonexistent agents, so there's no observable timing difference
-// between "agent doesn't exist" and "wrong secret".
+// The secret is checked with PBKDF2 and a constant-time compare, and an
+// unknown agent costs the same work as a wrong secret, so there's no
+// observable timing difference between the two.
 func (r *Registry) Authenticate(agentID, secret string) (AgentRecord, error) {
 	rec, found := r.agents[agentID]
 
-	candidate := HashSecret(agentID, secret)
-	stored := rec.SecretHash // empty if the agent wasn't found
+	stored := rec.SecretHash
+	if !found || stored == "" {
+		// Burn the same work as a real verification so response time
+		// doesn't reveal whether the agent exists.
+		verifySecret(agentID, secret, dummyHash)
+		return AgentRecord{}, fmt.Errorf("identity: authentication failed for agent %q", agentID)
+	}
 
-	match := subtle.ConstantTimeCompare([]byte(candidate), []byte(stored)) == 1
-
-	if !found || !match || stored == "" {
+	if !verifySecret(agentID, secret, stored) {
 		return AgentRecord{}, fmt.Errorf("identity: authentication failed for agent %q", agentID)
 	}
 	return rec, nil
-}
-
-// HashSecret computes the hash used to store bootstrap secrets. It's
-// exported so cmd/nexus-agentctl can use it to generate new entries for
-// configs/agents.json.
-func HashSecret(agentID, secret string) string {
-	sum := sha256.Sum256([]byte(agentID + ":" + secret))
-	return hex.EncodeToString(sum[:])
 }

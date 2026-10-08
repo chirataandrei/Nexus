@@ -11,7 +11,9 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
+	"strconv"
 	"time"
 )
 
@@ -43,15 +45,62 @@ type TokenResponse struct {
 // huge payloads can't be sent to an authentication endpoint.
 const maxTokenRequestBytes = 1 << 16 // 64 KiB
 
-// TokenHandler builds the HTTP handler for POST /nexus/identity/token.
-// suspension may be nil, in which case NoopSuspensionChecker is used.
+// Default brute-force limits for the token endpoint: failed attempts
+// per client IP, and per (agent, client IP) pair, inside the window.
+const (
+	DefaultMaxFailuresPerIP    = 20
+	DefaultMaxFailuresPerAgent = 5
+	DefaultFailureWindow       = time.Minute
+)
+
+// TokenLimits groups the brute-force limiters of the token endpoint.
+// Failures are keyed by client IP (r.RemoteAddr — X-Forwarded-For is
+// deliberately not trusted) and by agent+IP, so an attacker can't lock a
+// legitimate agent out from another address.
+type TokenLimits struct {
+	PerIP    *FailureLimiter
+	PerAgent *FailureLimiter
+}
+
+// DefaultTokenLimits returns limiters with the default thresholds.
+func DefaultTokenLimits() TokenLimits {
+	return TokenLimits{
+		PerIP:    NewFailureLimiter(DefaultMaxFailuresPerIP, DefaultFailureWindow),
+		PerAgent: NewFailureLimiter(DefaultMaxFailuresPerAgent, DefaultFailureWindow),
+	}
+}
+
+func clientIP(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
+}
+
+// TokenHandler builds the HTTP handler for POST /nexus/identity/token
+// with the default brute-force limits. suspension may be nil, in which
+// case NoopSuspensionChecker is used.
 func TokenHandler(registry *Registry, issuer *Issuer, suspension SuspensionChecker) http.HandlerFunc {
+	return TokenHandlerWithLimits(registry, issuer, suspension, DefaultTokenLimits())
+}
+
+// TokenHandlerWithLimits is TokenHandler with explicit limiters.
+func TokenHandlerWithLimits(registry *Registry, issuer *Issuer, suspension SuspensionChecker, limits TokenLimits) http.HandlerFunc {
 	if suspension == nil {
 		suspension = NoopSuspensionChecker{}
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "method not allowed, use POST", http.StatusMethodNotAllowed)
+			return
+		}
+
+		// Checked before reading the body or hashing anything, so a
+		// blocked client costs the server almost nothing.
+		ip := clientIP(r)
+		if blocked, wait := limits.PerIP.Blocked(ip); blocked {
+			tooManyAttempts(w, ip, "", wait)
 			return
 		}
 
@@ -64,6 +113,12 @@ func TokenHandler(registry *Registry, issuer *Issuer, suspension SuspensionCheck
 
 		if req.AgentID == "" || req.Secret == "" || req.TaskID == "" {
 			http.Error(w, "agent_id, secret, and task_id are required", http.StatusBadRequest)
+			return
+		}
+
+		agentKey := req.AgentID + "|" + ip
+		if blocked, wait := limits.PerAgent.Blocked(agentKey); blocked {
+			tooManyAttempts(w, ip, req.AgentID, wait)
 			return
 		}
 
@@ -82,6 +137,8 @@ func TokenHandler(registry *Registry, issuer *Issuer, suspension SuspensionCheck
 
 		rec, err := registry.Authenticate(req.AgentID, req.Secret)
 		if err != nil {
+			limits.PerIP.Fail(ip)
+			limits.PerAgent.Fail(agentKey)
 			slog.Warn("nexus.identity.auth_failed",
 				"event", "bootstrap_auth_failed",
 				"agent_id", req.AgentID,
@@ -90,6 +147,8 @@ func TokenHandler(registry *Registry, issuer *Issuer, suspension SuspensionCheck
 			http.Error(w, "authentication failed", http.StatusUnauthorized)
 			return
 		}
+
+		limits.PerAgent.Reset(agentKey)
 
 		scopes := req.Scopes
 		if len(scopes) == 0 {
@@ -127,6 +186,7 @@ func TokenHandler(registry *Registry, issuer *Issuer, suspension SuspensionCheck
 			"scopes", claims.Scopes,
 			"ttl_seconds", int(ttl.Seconds()),
 			"jti", claims.JTI,
+			"kid", issuer.KeyID(),
 		)
 
 		resp := TokenResponse{
@@ -139,4 +199,15 @@ func TokenHandler(registry *Registry, issuer *Issuer, suspension SuspensionCheck
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(resp)
 	}
+}
+
+func tooManyAttempts(w http.ResponseWriter, ip, agentID string, wait time.Duration) {
+	slog.Warn("nexus.identity.token_rate_limited",
+		"event", "token_rate_limited",
+		"remote_ip", ip,
+		"agent_id", agentID,
+		"retry_after_seconds", int(wait.Seconds())+1,
+	)
+	w.Header().Set("Retry-After", strconv.Itoa(int(wait.Seconds())+1))
+	http.Error(w, "too many failed attempts, retry later", http.StatusTooManyRequests)
 }

@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"strings"
 
+	"nexus-gateway/internal/keystore"
 	"nexus-gateway/internal/parser"
 )
 
@@ -20,8 +21,26 @@ import (
 // making a request, based on JWT-SVID tokens issued by Issuer.
 type SPIFFEValidator struct {
 	pub         ed25519.PublicKey
+	keys        keystore.PublicKeySet
+	revoked     *RevocationList
 	trustDomain string
 	suspension  SuspensionChecker
+}
+
+// WithRetiredKeys lets the validator keep accepting tokens signed by
+// keys that were rotated out (until those tokens expire).
+func (v *SPIFFEValidator) WithRetiredKeys(keys keystore.PublicKeySet) *SPIFFEValidator {
+	for kid, k := range keys {
+		v.keys[kid] = k
+	}
+	return v
+}
+
+// WithRevocations makes the validator reject tokens whose jti was
+// revoked.
+func (v *SPIFFEValidator) WithRevocations(r *RevocationList) *SPIFFEValidator {
+	v.revoked = r
+	return v
 }
 
 // NewSPIFFEValidator builds a validator that only accepts tokens signed
@@ -32,7 +51,9 @@ func NewSPIFFEValidator(pub ed25519.PublicKey, trustDomain string, suspension Su
 	if suspension == nil {
 		suspension = NoopSuspensionChecker{}
 	}
-	return &SPIFFEValidator{pub: pub, trustDomain: trustDomain, suspension: suspension}
+	keys := keystore.PublicKeySet{}
+	keys.Add(pub)
+	return &SPIFFEValidator{pub: pub, keys: keys, trustDomain: trustDomain, suspension: suspension}
 }
 
 // Validate implements proxy.Validator. It requires an
@@ -49,9 +70,23 @@ func (v *SPIFFEValidator) Validate(_ context.Context, meta *parser.RequestMeta, 
 		return err
 	}
 
-	claims, err := Verify(v.pub, token)
+	// The kid only selects a candidate key; the signature still has to
+	// verify against it. A token without kid is checked against the
+	// current key; an unknown kid is rejected.
+	pub := v.pub
+	if kid := TokenKeyID(token); kid != "" {
+		var ok bool
+		if pub, ok = v.keys[kid]; !ok {
+			return fmt.Errorf("identity: token signed by unknown key %q", kid)
+		}
+	}
+	claims, err := Verify(pub, token)
 	if err != nil {
 		return err
+	}
+
+	if v.revoked != nil && v.revoked.IsRevoked(claims.JTI) {
+		return fmt.Errorf("identity: token %s has been revoked", claims.JTI)
 	}
 
 	// An agent suspended by an operator (kill switch) is rejected
@@ -79,6 +114,7 @@ func (v *SPIFFEValidator) Validate(_ context.Context, meta *parser.RequestMeta, 
 	meta.VerifiedAgentID = claims.AgentID
 	meta.VerifiedTaskID = claims.TaskID
 	meta.VerifiedScopes = claims.Scopes
+	meta.VerifiedJTI = claims.JTI
 
 	return nil
 }
