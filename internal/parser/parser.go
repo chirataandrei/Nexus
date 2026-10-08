@@ -80,6 +80,13 @@ type RequestMeta struct {
 	// the whole upstream.
 	MCPTool string `json:"mcp_tool,omitempty"`
 
+	// IsBatch is true when the body is a JSON-RPC batch (an array of
+	// messages). Per-tool scope decisions are made from a single parsed
+	// message, so a batch would be authorized with the upstream's generic
+	// scope while the upstream executes every call in it. The proxy
+	// rejects batches instead of guessing.
+	IsBatch bool `json:"is_batch,omitempty"`
+
 	// The fields below are populated exclusively by a Validator
 	// (identity.SPIFFEValidator) after a successful cryptographic
 	// verification of the JWT-SVID presented by the agent. They are the
@@ -89,6 +96,13 @@ type RequestMeta struct {
 	VerifiedAgentID string   `json:"verified_agent_id,omitempty"`
 	VerifiedTaskID  string   `json:"verified_task_id,omitempty"`
 	VerifiedScopes  []string `json:"verified_scopes,omitempty"`
+	// VerifiedJTI is the token's unique ID — what an operator needs to
+	// revoke a specific stolen token.
+	VerifiedJTI string `json:"verified_jti,omitempty"`
+
+	// BudgetReservedUSD is the in-flight cost reserved for this request
+	// by the BudgetEnforcer; released by proxy.BudgetReleaser.
+	BudgetReservedUSD float64 `json:"-"`
 
 	// RequestBody is the full request body (the agent's "prompt"),
 	// populated by Parse and used by compliance.Sink to compute an
@@ -163,6 +177,9 @@ func Parse(r *http.Request) (*RequestMeta, []byte, error) {
 				meta.MCPTool = toolName
 			}
 		}
+	} else if isJSONRPCBatch(body) {
+		meta.Protocol = ProtocolJSONRPC
+		meta.IsBatch = true
 	} else if len(body) == 0 {
 		meta.Protocol = ProtocolREST
 	}
@@ -186,6 +203,29 @@ func tryParseJSONRPC(body []byte) (jsonRPCEnvelope, bool) {
 		return env, false
 	}
 	return env, true
+}
+
+// isJSONRPCBatch reports whether body is a JSON array containing at
+// least one JSON-RPC message (an object with a "jsonrpc" field). Plain
+// JSON arrays that aren't JSON-RPC are not batches.
+func isJSONRPCBatch(body []byte) bool {
+	trimmed := bytes.TrimSpace(body)
+	if len(trimmed) == 0 || trimmed[0] != '[' {
+		return false
+	}
+	var items []json.RawMessage
+	if err := json.Unmarshal(trimmed, &items); err != nil {
+		return false
+	}
+	for _, it := range items {
+		var probe struct {
+			JSONRPC *json.RawMessage `json:"jsonrpc"`
+		}
+		if json.Unmarshal(it, &probe) == nil && probe.JSONRPC != nil {
+			return true
+		}
+	}
+	return false
 }
 
 // readLimited reads the entire request body (without truncating it —

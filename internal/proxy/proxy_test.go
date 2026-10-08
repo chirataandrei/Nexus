@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"nexus-gateway/internal/config"
@@ -262,5 +263,103 @@ func TestServer_LongestPrefixWins(t *testing.T) {
 
 	if !strings.Contains(rec.Body.String(), "/v1/openai/models") {
 		t.Errorf("unexpected response from the wrong upstream: %s", rec.Body.String())
+	}
+}
+
+// TestServer_RejectsJSONRPCBatch is the regression test for the batch
+// bypass: a batch mixing an allowed call with a protected one must never
+// reach the upstream (or the validator), whatever the scopes are.
+func TestServer_RejectsJSONRPCBatch(t *testing.T) {
+	var upstreamHits atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstreamHits.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	cfg := &config.Config{
+		ListenAddr: ":0",
+		Upstreams: []config.Upstream{{
+			Name:          "mail",
+			PathPrefix:    "/v1/mail",
+			TargetURL:     upstream.URL,
+			RequiredScope: "tools:mail:invoke",
+			ToolScopes:    map[string]string{"delete_email": "tools:email:delete"},
+		}},
+	}
+	validator := &capturingValidator{}
+	srv, err := NewServer(cfg, validator, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+
+	batch := `[{"jsonrpc":"2.0","method":"ping","id":1},` +
+		`{"jsonrpc":"2.0","method":"tools/call","id":2,"params":{"name":"delete_email"}}]`
+	for _, body := range []string{batch, "\n\t " + batch} {
+		req := httptest.NewRequest(http.MethodPost, "/v1/mail/mcp", strings.NewReader(body))
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+		}
+	}
+	if n := upstreamHits.Load(); n != 0 {
+		t.Errorf("upstream received %d request(s); a rejected batch must never be forwarded", n)
+	}
+	if validator.lastRequiredScope != "" {
+		t.Errorf("validator ran for a rejected batch (scope %q)", validator.lastRequiredScope)
+	}
+
+	// A single, non-batch call keeps working.
+	single := `{"jsonrpc":"2.0","method":"tools/call","id":3,"params":{"name":"delete_email"}}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/mail/mcp", strings.NewReader(single))
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || validator.lastRequiredScope != "tools:email:delete" {
+		t.Errorf("single call: status=%d scope=%q", rec.Code, validator.lastRequiredScope)
+	}
+}
+
+type strictSink struct {
+	err      error
+	recorded atomic.Int32
+}
+
+func (s *strictSink) RecordRequest(*parser.RequestMeta, string)              {}
+func (s *strictSink) RecordResponse(*parser.RequestMeta, string, int, int64) {}
+func (s *strictSink) RecordRejection(*parser.RequestMeta, string)            {}
+func (s *strictSink) RecordRequestStrict(*parser.RequestMeta, string) error {
+	s.recorded.Add(1)
+	return s.err
+}
+
+// TestServer_FailClosedAuditRefusesBeforeForwarding: when the audit sink
+// can't store the request record and vetoes, the upstream must never see
+// the call and the client gets 503.
+func TestServer_FailClosedAuditRefusesBeforeForwarding(t *testing.T) {
+	var hits atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+	}))
+	defer upstream.Close()
+	cfg := &config.Config{Upstreams: []config.Upstream{{Name: "m", PathPrefix: "/v1/m", TargetURL: upstream.URL}}}
+
+	for _, tc := range []struct {
+		name string
+		err  error
+		want int
+		hits int32
+	}{
+		{"audit ok", nil, http.StatusOK, 1},
+		{"audit vetoes", errors.New("disk full"), http.StatusServiceUnavailable, 0},
+	} {
+		hits.Store(0)
+		sink := &strictSink{err: tc.err}
+		srv, _ := NewServer(cfg, nil, nil, nil, sink)
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/m/x", nil))
+		if rec.Code != tc.want || hits.Load() != tc.hits || sink.recorded.Load() != 1 {
+			t.Errorf("%s: status=%d hits=%d recorded=%d", tc.name, rec.Code, hits.Load(), sink.recorded.Load())
+		}
 	}
 }

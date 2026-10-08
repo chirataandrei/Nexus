@@ -29,6 +29,17 @@ import (
 	"nexus-gateway/internal/parser"
 )
 
+// upstreamTransport is shared by every route. The stdlib default keeps
+// only 2 idle connections per host, which under concurrent load makes
+// the gateway open (and tear down) a new TCP connection to the upstream
+// for almost every request.
+var upstreamTransport = func() *http.Transport {
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.MaxIdleConns = 1024
+	t.MaxIdleConnsPerHost = 256
+	return t
+}()
+
 // route ties a path prefix to a configured upstream and to the stdlib
 // reverse proxy that performs the actual forwarding.
 type route struct {
@@ -80,6 +91,7 @@ func NewServer(cfg *config.Config, validator Validator, budget BudgetEnforcer, s
 			return nil, fmt.Errorf("proxy: invalid target_url for upstream %q: %w", u.Name, err)
 		}
 		rp := httputil.NewSingleHostReverseProxy(target)
+		rp.Transport = upstreamTransport
 		rp.ErrorHandler = upstreamErrorHandler(u.Name)
 		rp.ModifyResponse = makeSpendCapture(u.Name, u.PricePerThousandTokensUSD, spend)
 
@@ -125,6 +137,15 @@ func (s *Server) buildHandler(routes []route) http.Handler {
 			return
 		}
 
+		// JSON-RPC batches can't be authorized per call (scope is decided
+		// from one parsed message), so they're rejected outright rather
+		// than forwarded under the upstream's broader scope.
+		if meta.IsBatch {
+			s.audit.RecordRejection(meta, "jsonrpc_batch_not_supported")
+			http.Error(w, "JSON-RPC batch requests are not supported; send each call separately", http.StatusBadRequest)
+			return
+		}
+
 		rt := matchRoute(routes, r.URL.Path)
 		if rt == nil {
 			s.audit.RecordRejection(meta, "no_matching_upstream")
@@ -164,7 +185,20 @@ func (s *Server) buildHandler(routes []route) http.Handler {
 			return
 		}
 
-		s.audit.RecordRequest(meta, rt.name)
+		if rel, ok := s.budget.(BudgetReleaser); ok {
+			defer rel.Release(meta)
+		}
+
+		// The request record is written BEFORE forwarding. If the audit
+		// sink is fail-closed and cannot store it, the call is refused.
+		if strict, ok := s.audit.(logging.StrictRequestRecorder); ok {
+			if err := strict.RecordRequestStrict(meta, rt.name); err != nil {
+				http.Error(w, "audit log unavailable; request refused", http.StatusServiceUnavailable)
+				return
+			}
+		} else {
+			s.audit.RecordRequest(meta, rt.name)
+		}
 
 		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 

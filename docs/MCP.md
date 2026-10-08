@@ -48,4 +48,4 @@ The gateway's log will show `protocol=MCP`, `jsonrpc_method=tools/call`, `mcp_to
 ## Known limitations
 
 - A full MCP server/client isn't implemented (the `initialize` handshake, negotiated capabilities, SSE/stdio transport) — Nexus is an HTTP proxy that **recognizes the shape of messages**, not an MCP endpoint itself. For the common case (agent → Nexus → a real MCP server over HTTP), this level of recognition is enough for routing/authorization/audit.
-- JSON-RPC batch requests (an array of messages in a single body) aren't unpacked individually — each HTTP request is treated as a single message.
+- JSON-RPC batch requests (an array of messages in a single body) are rejected with `400`: per-tool scopes are decided from a single parsed message, so a batch could otherwise run calls under the upstream's broader scope.

@@ -112,3 +112,33 @@ func TestParse_MalformedJSONIsTreatedAsREST(t *testing.T) {
 		t.Errorf("malformed JSON should be treated as REST, got %q", meta.Protocol)
 	}
 }
+
+func TestParse_JSONRPCBatchIsFlagged(t *testing.T) {
+	payload := `[{"jsonrpc":"2.0","method":"tools/call","id":1,"params":{"name":"read_email"}},` +
+		`{"jsonrpc":"2.0","method":"tools/call","id":2,"params":{"name":"delete_email"}}]`
+	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader("  "+payload))
+
+	meta, _, err := Parse(req)
+	if err != nil {
+		t.Fatalf("Parse returned an unexpected error: %v", err)
+	}
+	if !meta.IsBatch {
+		t.Error("a JSON-RPC batch must set IsBatch")
+	}
+	if meta.MCPTool != "" {
+		t.Errorf("MCPTool = %q, want empty for a batch", meta.MCPTool)
+	}
+}
+
+func TestParse_PlainJSONArrayIsNotABatch(t *testing.T) {
+	for _, payload := range []string{`[1,2,3]`, `[{"a":1}]`, `[]`, `[not json`} {
+		req := httptest.NewRequest(http.MethodPost, "/x", strings.NewReader(payload))
+		meta, _, err := Parse(req)
+		if err != nil {
+			t.Fatalf("Parse(%s) error: %v", payload, err)
+		}
+		if meta.IsBatch {
+			t.Errorf("%s must not be flagged as a JSON-RPC batch", payload)
+		}
+	}
+}
