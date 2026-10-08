@@ -6,7 +6,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 W=$(mktemp -d)
-trap 'kill $(jobs -p) 2>/dev/null || true; rm -rf "$W"' EXIT
+trap 'kill $(jobs -p) 2>/dev/null || true; wait 2>/dev/null || true; rm -rf "$W"' EXIT
 GW=http://127.0.0.1:8088
 say() { printf '\n\033[1;36m== %s\033[0m\n' "$*"; sleep "${DEMO_PAUSE:-1}"; }
 code() { curl -s -o /dev/null -w '%{http_code}' "$@"; }
