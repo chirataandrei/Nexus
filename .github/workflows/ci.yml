@@ -28,3 +28,14 @@ jobs:
       - run: go test -run '^$' -fuzz=FuzzParse -fuzztime=20s ./internal/parser
       - run: go test -run '^$' -fuzz='FuzzVerify$' -fuzztime=20s ./internal/identity
       - run: go test -run '^$' -fuzz=FuzzVerifySecret -fuzztime=10s ./internal/identity
+
+  # The official MCP Go SDK (client + server) talking through the real
+  # gateway binary. Separate module: the SDK needs a newer Go than the gateway.
+  mcp-e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+      - run: cd integration/mcp && GOWORK=off go test -count=1 -timeout 120s ./...

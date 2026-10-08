@@ -3,7 +3,7 @@
 [![CI](https://github.com/chirataandrei/Nexus/actions/workflows/ci.yml/badge.svg)](https://github.com/chirataandrei/Nexus/actions/workflows/ci.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-A Layer 7 reverse proxy written in Go (standard library only, no external dependencies) that sits between AI agents and LLM models / internal services. It eliminates static API keys (each agent gets an ephemeral cryptographic identity, inspired by WIMSE/SPIFFE), enforces real-time per-agent budgets, writes every request to a tamper-evident ledger, and natively recognizes the Model Context Protocol (MCP).
+A Layer 7 reverse proxy written in Go (standard library only, no external dependencies) that sits between AI agents and LLM models / internal services. It eliminates static API keys (each agent gets an ephemeral cryptographic identity, inspired by WIMSE/SPIFFE), enforces real-time per-agent budgets, writes every request to a tamper-evident ledger, and recognizes Model Context Protocol (MCP) traffic and enforces per-tool scopes on it.
 
 ## Project structure
 
@@ -112,7 +112,7 @@ The test suite runs under `go test -race` in CI, including a test that fires 500
 - The FinOps `Ledger` lives in a single process's memory — multiple Nexus instances running in parallel would need a shared store (e.g. Redis).
 - The compliance chain is a single local file on a single instance; there's no automatic purging once retention expires.
 - The non-custodial wallet integration (Locus, Skyfire) mentioned in the original proposal remains out of scope for now.
-- MCP compatibility recognizes the shape of JSON-RPC messages; it doesn't implement a full MCP server/client (handshake, capability negotiation, SSE/stdio transport); JSON-RPC batch requests are rejected with `400` because per-tool scopes can only be enforced one call at a time.
+- MCP support is a recognizing proxy, not an MCP endpoint: it understands the message shapes and tool names, but doesn't implement the handshake or capability negotiation itself, and only the HTTP transports pass through (not stdio). It is tested against the official MCP Go SDK's real client and server over Streamable HTTP, including SSE responses (`make test-mcp`). JSON-RPC batch requests are rejected with `400` because per-tool scopes can only be enforced one call at a time.
 
 ## Demo
 

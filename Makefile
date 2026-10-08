@@ -1,4 +1,4 @@
-.PHONY: build run test test-all test-race bench demo vet fmt agentctl
+.PHONY: build run test test-all test-race test-mcp bench demo vet fmt agentctl
 
 build:
 	go build -o bin/nexus-gateway ./cmd/nexus-gateway
@@ -23,6 +23,11 @@ vet:
 
 fmt:
 	gofmt -l .
+
+# test-mcp runs the official MCP Go SDK client and server through the real
+# gateway binary (separate module, needs Go 1.25+).
+test-mcp:
+	cd integration/mcp && GOWORK=off go test -count=1 -timeout 120s ./...
 
 # test-race runs everything under the Go race detector (what CI runs).
 test-race:
