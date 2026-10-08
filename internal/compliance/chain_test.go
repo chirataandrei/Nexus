@@ -3,6 +3,7 @@ package compliance
 import (
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 )
 
@@ -163,4 +164,55 @@ func splitNonEmptyLines(s string) []string {
 		out = append(out, s[start:])
 	}
 	return out
+}
+
+// Many goroutines appending at once (group commit) must still produce one
+// valid chain: unique, gap-free sequence numbers and correct hashes.
+func TestChain_ConcurrentAppendsStayVerifiable(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ledger.jsonl")
+	c, err := OpenChain(path, 6)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const writers, each = 40, 25
+	var wg sync.WaitGroup
+	for w := 0; w < writers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < each; i++ {
+				rec, err := c.Append(Record{Event: "request_received", VerifiedAgentID: "a"})
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				if rec.Sequence == 0 {
+					t.Error("record returned without a sequence")
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	c.Close()
+	n, err := VerifyChain(path)
+	if err != nil || n != writers*each {
+		t.Fatalf("VerifyChain = %d, %v; want %d records", n, err, writers*each)
+	}
+}
+
+// Append returns only after fsync: once it has returned, a fresh open of
+// the file must already see the record.
+func TestChain_AppendIsDurableOnReturn(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ledger.jsonl")
+	c, err := OpenChain(path, 6)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if _, err := c.Append(Record{Event: "request_received"}); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := VerifyChain(path); err != nil || n != 1 {
+		t.Fatalf("record not visible right after Append: n=%d err=%v", n, err)
+	}
 }

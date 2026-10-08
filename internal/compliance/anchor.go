@@ -109,6 +109,10 @@ func (c *Chain) anchorLocked() error {
 	if a == nil || c.seq == 0 || c.seq == a.lastSeq {
 		return nil
 	}
+	// An anchor must never vouch for records that are not on disk yet.
+	if err := c.file.Sync(); err != nil {
+		return fmt.Errorf("compliance: cannot sync ledger before anchoring: %w", err)
+	}
 	an := Anchor{Seq: c.seq, Hash: c.lastHash, Timestamp: time.Now().UTC(), PrevAnchor: a.prevDigest, KID: a.kid}
 	an.Signature = base64.StdEncoding.EncodeToString(ed25519.Sign(a.priv, an.message()))
 

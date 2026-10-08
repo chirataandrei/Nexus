@@ -20,6 +20,7 @@ import (
 	"log/slog"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -87,6 +88,16 @@ type Chain struct {
 	seq             int64
 	retentionMonths int
 	anchor          *anchorer // nil until EnableAnchoring
+
+	// Group commit. Records are written under mu (which fixes their order
+	// in the chain); durability is a separate step shared by every writer
+	// that is waiting at the same moment. See waitDurable.
+	written  atomic.Int64 // highest seq written to the file (maybe not yet synced)
+	syncMu   sync.Mutex   // guards the fields below; never held while taking mu
+	syncCond *sync.Cond
+	synced   int64 // highest seq known to be on disk
+	syncing  bool  // a goroutine is inside file.Sync right now
+	syncErr  error // first fsync failure; the chain refuses writes after it
 }
 
 // OpenChain opens (or creates) the chain file at path. If the file
@@ -115,13 +126,17 @@ func OpenChain(path string, retentionMonths int) (*Chain, error) {
 		return nil, fmt.Errorf("compliance: cannot open chain %s: %w", path, err)
 	}
 
-	return &Chain{
+	c := &Chain{
 		file:            f,
 		path:            path,
 		lastHash:        lastHash,
 		seq:             lastSeq,
 		retentionMonths: retentionMonths,
-	}, nil
+		synced:          lastSeq, // whatever was on disk at startup
+	}
+	c.syncCond = sync.NewCond(&c.syncMu)
+	c.written.Store(lastSeq)
+	return c, nil
 }
 
 // Close closes the chain's backing file.
@@ -138,15 +153,27 @@ func (c *Chain) Close() error {
 func (c *Chain) RetentionMonths() int { return c.retentionMonths }
 
 // Append adds a new record to the chain, automatically filling in
-// Sequence, Timestamp, PrevHash, and Hash. The write is synced to disk
-// (fsync) before returning — a compliance record reported as saved must
-// actually be durable.
+// Sequence, Timestamp, PrevHash, and Hash. It returns only once the
+// record is durable on disk (fsync) — a compliance record reported as
+// saved must actually be saved.
+//
+// Concurrent appends share fsyncs (group commit): each record is written
+// in chain order under the lock, then every writer waiting at that moment
+// is covered by a single fsync. The guarantee per call is unchanged; only
+// the number of fsyncs per record drops under load.
 func (c *Chain) Append(rec Record) (Record, error) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 
-	// seq and lastHash only advance once the record is durably written,
-	// so a failed write leaves no gap that would later break the chain.
+	c.syncMu.Lock()
+	failed := c.syncErr
+	c.syncMu.Unlock()
+	if failed != nil {
+		c.mu.Unlock()
+		return rec, fmt.Errorf("compliance: chain %s is closed to writes after an earlier fsync failure (restart to re-verify it): %w", c.path, failed)
+	}
+
+	// seq and lastHash only advance once the record is written, so a
+	// failed write leaves no gap that would later break the chain.
 	rec.Sequence = c.seq + 1
 	if rec.Timestamp.IsZero() {
 		rec.Timestamp = time.Now().UTC()
@@ -156,6 +183,7 @@ func (c *Chain) Append(rec Record) (Record, error) {
 
 	line, err := json.Marshal(rec)
 	if err != nil {
+		c.mu.Unlock()
 		return rec, fmt.Errorf("compliance: cannot serialize record: %w", err)
 	}
 	line = append(line, '\n')
@@ -164,22 +192,64 @@ func (c *Chain) Append(rec Record) (Record, error) {
 	if _, err := c.file.Write(line); err != nil {
 		// A partial line would corrupt the chain; cut it off again.
 		_ = c.file.Truncate(offset)
+		c.mu.Unlock()
 		return rec, fmt.Errorf("compliance: cannot write to chain %s: %w", c.path, err)
 	}
-	if err := c.file.Sync(); err != nil {
-		_ = c.file.Truncate(offset)
-		return rec, fmt.Errorf("compliance: cannot sync chain %s to disk: %w", c.path, err)
-	}
-
 	c.seq = rec.Sequence
 	c.lastHash = rec.Hash
+	c.written.Store(rec.Sequence)
+	c.mu.Unlock()
 
-	if c.anchor != nil && c.anchor.every > 0 && c.seq%c.anchor.every == 0 {
-		if err := c.anchorLocked(); err != nil {
+	if err := c.waitDurable(rec.Sequence); err != nil {
+		return rec, err
+	}
+
+	c.mu.Lock()
+	due := c.anchor != nil && c.anchor.every > 0 && rec.Sequence%c.anchor.every == 0
+	c.mu.Unlock()
+	if due {
+		if err := c.Anchor(); err != nil {
 			slog.Error("nexus.compliance.anchor_failed", "event", "anchor_failed", "error", err.Error())
 		}
 	}
 	return rec, nil
+}
+
+// waitDurable blocks until record seq is on disk. The first waiter
+// becomes the leader and fsyncs everything written so far; the others
+// sleep and are released when that fsync covers them. Writers that arrive
+// during an fsync form the next batch.
+//
+// If fsync fails the records in flight may or may not be durable, and
+// the chain cannot tell which, so it refuses further writes; a restart
+// re-verifies the file.
+func (c *Chain) waitDurable(seq int64) error {
+	c.syncMu.Lock()
+	defer c.syncMu.Unlock()
+	for {
+		if c.synced >= seq {
+			return nil
+		}
+		if c.syncErr != nil {
+			return fmt.Errorf("compliance: cannot sync chain %s to disk: %w", c.path, c.syncErr)
+		}
+		if c.syncing {
+			c.syncCond.Wait()
+			continue
+		}
+		c.syncing = true
+		target := c.written.Load() // everything up to here is already written
+		c.syncMu.Unlock()
+		err := c.file.Sync()
+		c.syncMu.Lock()
+		c.syncing = false
+		if err != nil {
+			c.syncErr = err
+		} else if target > c.synced {
+			c.synced = target
+		}
+		c.syncCond.Broadcast()
+	}
 }
 
 // computeHash computes a record's hash from its content (with Hash
