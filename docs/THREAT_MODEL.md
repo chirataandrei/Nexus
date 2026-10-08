@@ -28,7 +28,7 @@ cover. Each mitigation names the code and the test that exercises it.
 - Token = bearer credential; **no proof of possession**. A thief can use it from anywhere until it expires or is revoked.
 - **Bounded by:** TTL (5 min default, hard ceiling 24 h, per-agent override), single `task_id` and least-privilege `scopes` per token, unique `jti`.
 - **Stop it now:** `POST /nexus/control/revoke {jti}` (kills that token), `POST /nexus/control/suspend` (kills the agent, including new tokens). The `jti` appears on every ledger record, so the stolen token's activity can be found and revoked. Tests: `TestRevokedTokenIsRejectedImmediately`, `TestValidatorPopulatesJTI`.
-- **Not mitigated:** reuse inside the TTL when nobody notices; revocations are in memory and reset on restart (the token then lives until `exp` at most).
+- **Not mitigated:** reuse inside the TTL when nobody notices; revocations and suspensions are rebuilt from the ledger at startup (`compliance.RestoreState`), so a restart does not undo them. Test: `TestSuspendHandler_PersistsAcrossRestart`. If the ledger write for a suspend/revoke fails, the API answers 500 ("active in memory, not persisted") rather than claiming success.
 
 ### Brute force / enumeration on `POST /nexus/identity/token`
 - Failures are limited per client IP and per agent+IP, `429` + `Retry-After`, checked before any hashing. Unknown agents count, so scanning agent IDs is throttled. Keying on agent+IP (not agent alone) means an attacker can't lock a legitimate agent out from another address. Tests: `TestTokenHandler_BruteForceIsRateLimited…`, `…PerIPLimitCoversAgentEnumeration`, `…SuccessResetsAgentCounter`.
@@ -46,7 +46,7 @@ cover. Each mitigation names the code and the test that exercises it.
 
 ### Operator endpoints
 - `/nexus/control/*` and `/nexus/finops/policies` require the admin token (constant-time compare of SHA-256). Denials are logged. Every suspend/resume/revoke is itself written to the ledger.
-- **Residual:** single shared admin token, no per-operator identity, no rate limit on it (long random token). `/nexus/finops/usage`, the dashboard and `/nexus/compliance/verify` are unauthenticated read-only — bind them to an internal network.
+- **Residual:** single shared admin token, no per-operator identity, no rate limit on it (long random token). `/nexus/finops/usage` needs the admin token by default (`public_usage_endpoint: true` opts out). The dashboard page itself (static HTML, no data) and `/nexus/compliance/verify` (integrity result only) stay unauthenticated — bind them to an internal network.
 
 ### Ledger tampering
 | Attacker | Outcome |
@@ -60,11 +60,11 @@ cover. Each mitigation names the code and the test that exercises it.
 - Anchor key is separate from the identity key and rotatable the same way (`compliance_anchor_retired_keys_file`).
 
 ### Audit failure: fail-open vs fail-closed
-- A compliance gateway that keeps serving when it can't log has a hole in its guarantee, but one that stops serving turns a full disk into an outage. Both are supported: `compliance_fail_closed: true` writes the request record **before** forwarding and returns `503` if it can't; default `false` logs the error and continues. Tests: `TestServer_FailClosedAuditRefusesBeforeForwarding`, `TestSink_FailClosedVetoesRequestOnWriteError`. A failed write never leaves a gap or partial line (`TestChain_FailedWriteLeavesNoGap`).
+- A compliance gateway that keeps serving when it can't log has a hole in its guarantee, but one that stops serving turns a full disk into an outage. Both are supported: `compliance_fail_closed: true` writes the request record **before** forwarding and returns `503` if it can't; this is the **default**; `false` logs the error and continues (availability over completeness). Tests: `TestServer_FailClosedAuditRefusesBeforeForwarding`, `TestSink_FailClosedVetoesRequestOnWriteError`. A failed write never leaves a gap or partial line (`TestChain_FailedWriteLeavesNoGap`).
 - Response and rejection records are written after the call, so even fail-closed can only log a failure there.
 
 ### Budget abuse and denial of wallet
-- Daily USD budget and per-task token cap, enforced before the upstream call. With `max_cost_per_request_usd` the worst-case cost of in-flight requests is reserved atomically, so a burst can't overshoot: 500 concurrent requests → exactly `budget / cost` pass. Test: `TestBudget_ConcurrentRequestsStopExactlyAtLimit` (also run under `-race`). Without that setting a burst can overshoot (spend is recorded after the response).
+- Daily USD budget and per-task token cap, enforced before the upstream call. With `max_cost_per_request_usd` the worst-case cost of in-flight requests is reserved atomically, so a burst can't overshoot: 500 concurrent requests → exactly `budget / cost` pass. Test: `TestBudget_ConcurrentRequestsStopExactlyAtLimit` (also run under `-race`). If it isn't set, a budgeted agent falls back to reserving `min(daily budget, $1.00)` per request, so the guarantee is on by default (conservative: it limits requests in flight, so set a realistic value).
 - **Residual:** in-memory ledger, single instance; cost is derived from the upstream's reported `usage`.
 
 ### Malformed input

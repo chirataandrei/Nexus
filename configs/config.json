@@ -12,7 +12,7 @@
   "finops_policies_file": "configs/finops_policies.json",
   "compliance_ledger_file": "data/compliance_ledger.jsonl",
   "compliance_retention_months": 6,
-  "compliance_fail_closed": false,
+  "compliance_fail_closed": true,
   "compliance_anchor_file": "data/compliance_anchors.jsonl",
   "compliance_anchor_key_file": "data/anchor.key.json",
   "compliance_anchor_every_records": 100,

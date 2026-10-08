@@ -131,6 +131,9 @@ func main() {
 	if err != nil {
 		log.Fatalf("nexus-gateway: cannot load FinOps policies: %v", err)
 	}
+	if finopsPolicies.DefaultMaxCostPerRequestUSD() <= 0 {
+		log.Printf("nexus-gateway: default_max_cost_per_request_usd is not set — reserving min(budget, $%.2f) per request so bursts cannot overshoot budgets; set it to your real worst-case cost to allow more requests in flight", finops.FallbackMaxCostPerRequestUSD)
+	}
 	ledger := finops.NewLedger()
 	budgetEnforcer := finops.NewEnforcer(finopsPolicies, ledger)
 	spendRecorder := finops.NewRecorder(ledger)
@@ -150,7 +153,10 @@ func main() {
 		return 0, false
 	}
 	complianceSink := compliance.NewSink(chain, costLookup, cfg.MaxPromptExcerptBytes)
-	complianceSink.SetFailClosed(cfg.ComplianceFailClosed)
+	complianceSink.SetFailClosed(cfg.FailClosed())
+	if !cfg.FailClosed() {
+		log.Printf("nexus-gateway: WARNING compliance_fail_closed is false — requests are forwarded even if their audit record cannot be written")
+	}
 
 	// audit writes in parallel to stdout (operational, human-readable)
 	// and to the WORM compliance chain — the two aren't mutually
@@ -170,7 +176,12 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/nexus/identity/token", identity.TokenHandlerWithLimits(agentsRegistry, issuer, suspensionRegistry, tokenLimits))
-	mux.HandleFunc("/nexus/finops/usage", finops.UsageHandler(ledger, finopsPolicies))
+	if cfg.PublicUsageEndpoint {
+		log.Printf("nexus-gateway: WARNING public_usage_endpoint is true — /nexus/finops/usage needs no token")
+		mux.HandleFunc("/nexus/finops/usage", finops.UsageHandler(ledger, finopsPolicies))
+	} else {
+		mux.Handle("/nexus/finops/usage", adminOnly(finops.UsageHandler(ledger, finopsPolicies)))
+	}
 	mux.Handle("/nexus/finops/policies", adminOnly(finops.PoliciesHandler(finopsPolicies)))
 	mux.HandleFunc("/nexus/finops/dashboard", finops.DashboardHandler())
 	mux.Handle("/nexus/control/suspend", adminOnly(compliance.SuspendHandler(suspensionRegistry, chain)))

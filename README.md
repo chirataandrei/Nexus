@@ -60,7 +60,7 @@ Different tools behind the same MCP upstream can require different permissions: 
 
 Before a request reaches the LLM, `internal/finops.Enforcer` checks the in-memory `Ledger` to see whether the agent has already exhausted its daily budget or the current task's token limit — if so, the request is rejected with `429`, without consuming a single costly token. `internal/finops.Recorder` reads `usage` from the LLM's response (OpenAI/Anthropic) through the reverse proxy's `ModifyResponse`, and updates the ledger without altering the response sent to the agent. `max_tokens_per_task` caps the tokens accumulated within a single task, no matter how many separate requests the agent makes — a direct circuit breaker against recurring hallucination loops.
 
-A simple dashboard is available at `GET /nexus/finops/dashboard`, plus an API at `/nexus/finops/usage` (read-only, unauthenticated — keep it on an internal network) and `/nexus/finops/policies` (admin token).
+A simple dashboard is available at `GET /nexus/finops/dashboard`, plus an API at `/nexus/finops/usage` and `/nexus/finops/policies`. Both need the admin token (paste it into the dashboard's token field); set `public_usage_endpoint: true` only if `/usage` must be readable without one.
 
 ## Compliance and kill switch
 
@@ -70,7 +70,7 @@ Every request generates a record in `internal/compliance.Chain`, which includes 
 
 **Tamper evidence, and what it does not cover.** A hash chain alone cannot survive someone who rewrites the whole file: they can edit a record and recompute every hash after it, and the chain still verifies. So the head of the chain is periodically **signed with an Ed25519 anchor key** (`compliance_anchor_key_file`, separate from the identity key) and appended to a separate anchors file (`compliance_anchor_file` — put it on another volume; each anchor is also logged on stdout so a log shipper keeps a second copy). Anchors are chained to each other and carry a `kid`. At startup, and on `GET /nexus/compliance/verify`, the ledger must match every anchor: an edited, rewritten, truncated or deleted ledger is detected, and the gateway refuses to start. The residual exposure is the interval since the last anchor (records after it are covered by the chain only), and an attacker who holds the anchor key or can wipe the ledger *and* the anchors file together; see the threat model.
 
-**Fail-open vs. fail-closed.** If the ledger can't be written, by default (`compliance_fail_closed: false`) the error is logged and the request proceeds — availability over completeness. With `compliance_fail_closed: true`, the request record is written *before* forwarding and a failure returns `503` without contacting the upstream — no un-audited call can happen. Response/rejection records are written after the fact, so a failure there can only be logged.
+**Fail-open vs. fail-closed.** If the ledger can't be written, by default (`compliance_fail_closed: true`, also when the key is omitted) the request is refused — completeness over availability. With `compliance_fail_closed: false` the error is logged and the request proceeds instead. In the default mode the request record is written *before* forwarding and a failure returns `503` without contacting the upstream — no un-audited call can happen. Response/rejection records are written after the fact, so a failure there can only be logged.
 
 An operator can instantly and globally suspend an agent: `POST /nexus/control/suspend|resume`, `GET /nexus/control/suspended` — requests using an already-issued token and the issuance of new tokens are both blocked immediately, and each action is itself recorded in the chain. `GET /nexus/compliance/verify` confirms the history's integrity at any time.
 
@@ -101,17 +101,16 @@ With the real compliance ledger on (every request writes two records, each durab
 
 Group commit made the ledger about 5.5× faster at 50 workers, and throughput keeps rising with concurrency because more records share each sync. It is still **disk-bound**: these numbers come from a MacBook, where Go's `File.Sync` issues `F_FULLFSYNC` (a real flush of the drive cache, ~10 ms) — Linux `fsync` on a server SSD is typically one to two orders of magnitude cheaper, so expect a much smaller gap there. Measure on your own hardware with `make bench`. If you cannot afford a durable write per request, the knob is the guarantee itself (not offered yet), not a faster benchmark.
 
-The test suite runs under `go test -race` in CI, including a test that fires 500 simultaneous requests for one agent and asserts that exactly `daily_budget / max_cost_per_request` of them reach the upstream. That guarantee needs `max_cost_per_request_usd` (per agent, or `default_max_cost_per_request_usd`) to be set: it reserves the worst-case cost of in-flight requests. Without it, the budget is only checked against already-recorded spend, so a burst can overshoot it.
+The test suite runs under `go test -race` in CI, including a test that fires 500 simultaneous requests for one agent and asserts that exactly `daily_budget / max_cost_per_request` of them reach the upstream. That guarantee rests on reserving the worst-case cost of in-flight requests: set `max_cost_per_request_usd` (per agent, or `default_max_cost_per_request_usd`) to your real figure. If you don't, a budgeted agent reserves `min(daily budget, $1.00)` per request, so the budget still holds, at the price of fewer concurrent requests.
 
 ## Known limitations
 
-- Token revocations and the kill-switch list are in memory; a restart clears them (tokens still expire within their TTL). The identity key is a local file, not an HSM/SPIRE-managed key.
+- Suspensions and token revocations are replayed from the ledger at startup, so they survive a restart; they are only as durable as the ledger file itself. The identity key is a local file, not an HSM/SPIRE-managed key.
 - A token is a bearer credential: it is not bound to a TLS channel or a client key (no DPoP/mTLS), so a stolen token works until `exp` or revocation.
 - The gateway doesn't terminate TLS or trust `X-Forwarded-For`; run it behind a TLS proxy on a private network, and note per-IP limits then see the proxy's address unless it's the direct peer.
 - Ledger records after the last signed anchor are protected by the hash chain only.
-- Without `max_cost_per_request_usd`, a burst of simultaneous requests can overshoot the daily budget (spend is recorded after the response).
 - The FinOps `Ledger` lives in a single process's memory — multiple Nexus instances running in parallel would need a shared store (e.g. Redis).
-- The compliance chain is a single local file on a single instance; writes are fail-open on error; there's no automatic purging once retention expires.
+- The compliance chain is a single local file on a single instance; there's no automatic purging once retention expires.
 - The non-custodial wallet integration (Locus, Skyfire) mentioned in the original proposal remains out of scope for now.
 - MCP compatibility recognizes the shape of JSON-RPC messages; it doesn't implement a full MCP server/client (handshake, capability negotiation, SSE/stdio transport); JSON-RPC batch requests are rejected with `400` because per-tool scopes can only be enforced one call at a time.
 

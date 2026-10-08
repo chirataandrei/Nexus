@@ -49,6 +49,12 @@ type Upstream struct {
 	ToolScopes map[string]string `json:"tool_scopes,omitempty"`
 }
 
+// FailClosed reports whether a request that can't be audited is refused
+// (the default) rather than forwarded.
+func (c Config) FailClosed() bool {
+	return c.ComplianceFailClosed == nil || *c.ComplianceFailClosed
+}
+
 // Config is the gateway's complete configuration.
 type Config struct {
 	// ListenAddr is the TCP address the gateway listens on, e.g. ":8080".
@@ -107,8 +113,14 @@ type Config struct {
 	ComplianceRetentionMonths int `json:"compliance_retention_months"`
 	// ComplianceFailClosed: if true, a request whose audit record can't be
 	// written is refused with 503 instead of being forwarded un-audited.
-	// Default false (fail-open) — see docs/THREAT_MODEL.md for the trade-off.
-	ComplianceFailClosed bool `json:"compliance_fail_closed,omitempty"`
+	// Default true (fail-closed): a compliance gateway should not forward
+	// calls it could not record. Set false to prefer availability — see
+	// docs/THREAT_MODEL.md for the trade-off. A pointer so "unset" and
+	// "false" can be told apart.
+	ComplianceFailClosed *bool `json:"compliance_fail_closed,omitempty"`
+	// PublicUsageEndpoint: if true, GET /nexus/finops/usage needs no admin
+	// token. Default false — it exposes per-agent spend and task IDs.
+	PublicUsageEndpoint bool `json:"public_usage_endpoint,omitempty"`
 	// ComplianceAnchorFile is where signed ledger anchors are appended.
 	// Empty disables anchoring. Put it on a different volume than the
 	// ledger so one compromise doesn't cover both.

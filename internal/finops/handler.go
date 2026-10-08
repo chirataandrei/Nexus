@@ -152,6 +152,7 @@ const dashboardHTML = `<!doctype html>
 <body>
   <h1>Nexus Trust Protocol — FinOps</h1>
   <p class="sub">Current consumption per agent (reset daily, UTC) and budget policies.</p>
+  <label>Admin token <input id="token" type="password" autocomplete="off" placeholder="paste the admin token"></label>
 
   <table id="usage-table">
     <thead>
@@ -164,13 +165,31 @@ const dashboardHTML = `<!doctype html>
     <label>Agent ID <input name="agent_id" required></label>
     <label>Daily budget (USD) <input name="daily_budget_usd" type="number" step="0.01" min="0" required></label>
     <label>Max tokens / task <input name="max_tokens_per_task" type="number" step="1" min="0" required></label>
+    <label>Max cost / request (USD, blank = default) <input name="max_cost_per_request_usd" type="number" step="0.0001" min="0"></label>
     <button type="submit">Save policy</button>
   </form>
   <div id="status"></div>
 
 <script>
+const tokenInput = document.getElementById('token');
+try { tokenInput.value = sessionStorage.getItem('nexusAdminToken') || ''; } catch (e) {}
+tokenInput.addEventListener('change', () => {
+  try { sessionStorage.setItem('nexusAdminToken', tokenInput.value); } catch (e) {}
+  loadUsage();
+});
+function authHeaders(extra) {
+  const h = Object.assign({}, extra || {});
+  if (tokenInput.value) h['Authorization'] = 'Bearer ' + tokenInput.value;
+  return h;
+}
+
 async function loadUsage() {
-  const res = await fetch('/nexus/finops/usage');
+  const res = await fetch('/nexus/finops/usage', { headers: authHeaders() });
+  const statusEl = document.getElementById('status');
+  if (!res.ok) {
+    statusEl.textContent = res.status === 401 ? 'Enter the admin token to see usage.' : 'Error: ' + await res.text();
+    return;
+  }
   const rows = await res.json();
   const tbody = document.querySelector('#usage-table tbody');
   tbody.innerHTML = '';
@@ -178,11 +197,18 @@ async function loadUsage() {
     const tr = document.createElement('tr');
     const over = row.daily_budget_usd > 0 && row.spent_usd_today >= row.daily_budget_usd;
     const tasks = row.task_tokens ? Object.entries(row.task_tokens).map(([t, n]) => t + ': ' + n + ' tok').join(', ') : '—';
-    tr.innerHTML =
-      '<td>' + row.agent_id + '</td>' +
-      '<td class="' + (over ? 'over' : 'ok') + '">$' + row.spent_usd_today.toFixed(4) + '</td>' +
-      '<td>' + (row.daily_budget_usd > 0 ? '$' + row.daily_budget_usd.toFixed(2) : 'unlimited') + '</td>' +
-      '<td>' + tasks + '</td>';
+    const cells = [
+      [row.agent_id, ''],
+      ['$' + row.spent_usd_today.toFixed(4), over ? 'over' : 'ok'],
+      [row.daily_budget_usd > 0 ? '$' + row.daily_budget_usd.toFixed(2) : 'unlimited', ''],
+      [tasks, ''],
+    ];
+    for (const [text, cls] of cells) { // textContent: agent/task IDs are not trusted HTML
+      const td = document.createElement('td');
+      td.textContent = text;
+      if (cls) td.className = cls;
+      tr.appendChild(td);
+    }
     tbody.appendChild(tr);
   }
 }
@@ -194,8 +220,9 @@ document.getElementById('policy-form').addEventListener('submit', async (ev) => 
     agent_id: form.agent_id.value,
     daily_budget_usd: parseFloat(form.daily_budget_usd.value),
     max_tokens_per_task: parseInt(form.max_tokens_per_task.value, 10),
+    max_cost_per_request_usd: form.max_cost_per_request_usd.value ? parseFloat(form.max_cost_per_request_usd.value) : 0,
   };
-  const res = await fetch('/nexus/finops/policies', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+  const res = await fetch('/nexus/finops/policies', { method: 'POST', headers: authHeaders({'Content-Type':'application/json'}), body: JSON.stringify(payload) });
   const statusEl = document.getElementById('status');
   if (res.ok) {
     statusEl.textContent = 'Policy saved for ' + payload.agent_id + '.';
