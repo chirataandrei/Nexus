@@ -26,6 +26,13 @@ type BudgetEnforcer interface {
 	Authorize(ctx context.Context, meta *parser.RequestMeta) error
 }
 
+// BudgetReleaser is optionally implemented by a BudgetEnforcer that
+// reserves budget in Authorize. The proxy calls Release once the request
+// has completed (success, upstream error, or panic).
+type BudgetReleaser interface {
+	Release(meta *parser.RequestMeta)
+}
+
 // SpendRecorder is called after the response has been received from the
 // upstream, with the response body (typically an LLM's JSON, which
 // contains a "usage" field with the tokens consumed). NoopSpendRecorder

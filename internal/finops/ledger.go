@@ -24,7 +24,10 @@ type taskUsage struct {
 type agentState struct {
 	day      string // "2006-01-02" in UTC
 	spentUSD float64
-	tasks    map[string]*taskUsage
+	// reservedUSD is the worst-case cost of requests currently in flight
+	// (see AgentPolicy.MaxCostPerRequestUSD).
+	reservedUSD float64
+	tasks       map[string]*taskUsage
 }
 
 // Ledger is the consumption ledger, safe for concurrent access.
@@ -55,32 +58,58 @@ func (l *Ledger) ensureFreshLocked(agentID string) *agentState {
 	return st
 }
 
+// budgetEpsilon absorbs float accumulation error (ten additions of 0.1
+// don't sum to exactly 1.0).
+const budgetEpsilon = 1e-9
+
 // Authorize is the "hard" pre-request check: it rejects immediately,
 // before contacting any LLM, if the agent has already exhausted its
-// daily budget or the token limit for the current task.
-func (l *Ledger) Authorize(agentID, taskID string, policy AgentPolicy) error {
+// daily budget or the token limit for the current task. If the policy
+// sets MaxCostPerRequestUSD, the returned amount has been reserved
+// atomically with the check and must be given back with Release.
+func (l *Ledger) Authorize(agentID, taskID string, policy AgentPolicy) (reservedUSD float64, err error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
 	st := l.ensureFreshLocked(agentID)
 
-	if policy.DailyBudgetUSD > 0 && st.spentUSD >= policy.DailyBudgetUSD {
-		return fmt.Errorf(
-			"finops: daily budget exhausted for agent %q ($%.4f of $%.2f spent today)",
-			agentID, st.spentUSD, policy.DailyBudgetUSD,
+	if policy.DailyBudgetUSD > 0 && st.spentUSD+st.reservedUSD >= policy.DailyBudgetUSD-budgetEpsilon {
+		return 0, fmt.Errorf(
+			"finops: daily budget exhausted for agent %q ($%.4f spent + $%.4f in flight of $%.2f today)",
+			agentID, st.spentUSD, st.reservedUSD, policy.DailyBudgetUSD,
 		)
 	}
 
 	if policy.MaxTokensPerTask > 0 {
 		if tu, ok := st.tasks[taskID]; ok && tu.tokens >= policy.MaxTokensPerTask {
-			return fmt.Errorf(
+			return 0, fmt.Errorf(
 				"finops: token limit reached for this task (agent %q, task %q: %d of %d tokens) — possible recurring hallucination loop",
 				agentID, taskID, tu.tokens, policy.MaxTokensPerTask,
 			)
 		}
 	}
 
-	return nil
+	if policy.DailyBudgetUSD > 0 && policy.MaxCostPerRequestUSD > 0 {
+		st.reservedUSD += policy.MaxCostPerRequestUSD
+		return policy.MaxCostPerRequestUSD, nil
+	}
+	return 0, nil
+}
+
+// Release returns a reservation made by Authorize once the request has
+// finished (its real cost, if any, has been recorded with RecordSpend).
+func (l *Ledger) Release(agentID string, reservedUSD float64) {
+	if reservedUSD <= 0 {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if st, ok := l.agents[agentID]; ok {
+		st.reservedUSD -= reservedUSD
+		if st.reservedUSD < budgetEpsilon {
+			st.reservedUSD = 0
+		}
+	}
 }
 
 // RecordSpend accumulates the cost and tokens of a completed call. It's

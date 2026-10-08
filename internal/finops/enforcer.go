@@ -38,5 +38,20 @@ func (e *Enforcer) Authorize(_ context.Context, meta *parser.RequestMeta) error 
 		return nil
 	}
 	policy := e.policies.For(agentID)
-	return e.ledger.Authorize(agentID, meta.VerifiedTaskID, policy)
+	reserved, err := e.ledger.Authorize(agentID, meta.VerifiedTaskID, policy)
+	if err != nil {
+		return err
+	}
+	meta.BudgetReservedUSD = reserved
+	return nil
+}
+
+// Release implements proxy.BudgetReleaser: it gives back the worst-case
+// cost reserved by Authorize once the request is done. Safe to call more
+// than once.
+func (e *Enforcer) Release(meta *parser.RequestMeta) {
+	if meta.BudgetReservedUSD > 0 {
+		e.ledger.Release(meta.VerifiedAgentID, meta.BudgetReservedUSD)
+		meta.BudgetReservedUSD = 0
+	}
 }

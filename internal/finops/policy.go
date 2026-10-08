@@ -21,12 +21,20 @@ type AgentPolicy struct {
 	// consume in a single task (task_id) — the direct barrier against a
 	// recurring hallucination loop. 0 = no limit.
 	MaxTokensPerTask int `json:"max_tokens_per_task"`
+	// MaxCostPerRequestUSD is the worst-case cost of a single request.
+	// When set, Authorize reserves it up front (and releases it once the
+	// request completes), so concurrent in-flight requests can't
+	// collectively overshoot DailyBudgetUSD. 0 = no reservation: the
+	// budget is only checked against already-recorded spend, so a burst
+	// of simultaneous requests can exceed it.
+	MaxCostPerRequestUSD float64 `json:"max_cost_per_request_usd"`
 }
 
 // policiesFile is the on-disk JSON format.
 type policiesFile struct {
 	DefaultDailyBudgetUSD   float64       `json:"default_daily_budget_usd"`
 	DefaultMaxTokensPerTask int           `json:"default_max_tokens_per_task"`
+	DefaultMaxCostPerReqUSD float64       `json:"default_max_cost_per_request_usd"`
 	Agents                  []AgentPolicy `json:"agents"`
 }
 
@@ -36,6 +44,7 @@ type PolicyRegistry struct {
 	mu                      sync.RWMutex
 	defaultDailyBudgetUSD   float64
 	defaultMaxTokensPerTask int
+	defaultMaxCostPerReqUSD float64
 	agents                  map[string]AgentPolicy
 }
 
@@ -54,6 +63,7 @@ func LoadPolicyRegistry(path string) (*PolicyRegistry, error) {
 	r := &PolicyRegistry{
 		defaultDailyBudgetUSD:   f.DefaultDailyBudgetUSD,
 		defaultMaxTokensPerTask: f.DefaultMaxTokensPerTask,
+		defaultMaxCostPerReqUSD: f.DefaultMaxCostPerReqUSD,
 		agents:                  make(map[string]AgentPolicy, len(f.Agents)),
 	}
 	for _, p := range f.Agents {
@@ -78,6 +88,8 @@ func (r *PolicyRegistry) For(agentID string) AgentPolicy {
 		AgentID:          agentID,
 		DailyBudgetUSD:   r.defaultDailyBudgetUSD,
 		MaxTokensPerTask: r.defaultMaxTokensPerTask,
+
+		MaxCostPerRequestUSD: r.defaultMaxCostPerReqUSD,
 	}
 }
 
@@ -88,7 +100,7 @@ func (r *PolicyRegistry) Upsert(p AgentPolicy) error {
 	if p.AgentID == "" {
 		return fmt.Errorf("finops: agent_id is required for a policy")
 	}
-	if p.DailyBudgetUSD < 0 || p.MaxTokensPerTask < 0 {
+	if p.DailyBudgetUSD < 0 || p.MaxTokensPerTask < 0 || p.MaxCostPerRequestUSD < 0 {
 		return fmt.Errorf("finops: policy values cannot be negative")
 	}
 
@@ -104,7 +116,7 @@ func (r *PolicyRegistry) All() (defaults AgentPolicy, agents []AgentPolicy) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	defaults = AgentPolicy{DailyBudgetUSD: r.defaultDailyBudgetUSD, MaxTokensPerTask: r.defaultMaxTokensPerTask}
+	defaults = AgentPolicy{DailyBudgetUSD: r.defaultDailyBudgetUSD, MaxTokensPerTask: r.defaultMaxTokensPerTask, MaxCostPerRequestUSD: r.defaultMaxCostPerReqUSD}
 	agents = make([]AgentPolicy, 0, len(r.agents))
 	for _, p := range r.agents {
 		agents = append(agents, p)

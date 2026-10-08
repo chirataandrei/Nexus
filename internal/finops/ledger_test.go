@@ -9,7 +9,7 @@ func TestLedger_AuthorizeAllowsWithinBudget(t *testing.T) {
 	l := NewLedger()
 	policy := AgentPolicy{AgentID: "agent-1", DailyBudgetUSD: 5.0, MaxTokensPerTask: 1000}
 
-	if err := l.Authorize("agent-1", "task-1", policy); err != nil {
+	if _, err := l.Authorize("agent-1", "task-1", policy); err != nil {
 		t.Fatalf("Authorize should accept an agent with no spending: %v", err)
 	}
 }
@@ -20,7 +20,7 @@ func TestLedger_AuthorizeBlocksWhenDailyBudgetExceeded(t *testing.T) {
 
 	l.RecordSpend("agent-1", "task-1", 100, 1.0) // exactly the budget
 
-	if err := l.Authorize("agent-1", "task-1", policy); err == nil {
+	if _, err := l.Authorize("agent-1", "task-1", policy); err == nil {
 		t.Error("Authorize should reject a request once the daily budget is already exhausted")
 	}
 }
@@ -31,11 +31,11 @@ func TestLedger_AuthorizeBlocksWhenTaskTokenLimitReached(t *testing.T) {
 
 	l.RecordSpend("agent-1", "task-1", 500, 0.01)
 
-	if err := l.Authorize("agent-1", "task-1", policy); err == nil {
+	if _, err := l.Authorize("agent-1", "task-1", policy); err == nil {
 		t.Error("Authorize should reject once the per-task token limit is reached")
 	}
 	// A different task for the same agent should not be affected.
-	if err := l.Authorize("agent-1", "task-2", policy); err != nil {
+	if _, err := l.Authorize("agent-1", "task-2", policy); err != nil {
 		t.Errorf("a new task for the same agent should not be blocked: %v", err)
 	}
 }
@@ -50,7 +50,7 @@ func TestLedger_RecursiveHallucinationLoopGetsCircuitBroken(t *testing.T) {
 
 	calls := 0
 	for i := 0; i < 100; i++ {
-		if err := l.Authorize("agent-loop", "task-x", policy); err != nil {
+		if _, err := l.Authorize("agent-loop", "task-x", policy); err != nil {
 			break
 		}
 		calls++
@@ -60,7 +60,7 @@ func TestLedger_RecursiveHallucinationLoopGetsCircuitBroken(t *testing.T) {
 	if calls != 5 {
 		t.Errorf("expected exactly 5 allowed calls ($5 budget / $1 per call), got %d", calls)
 	}
-	if err := l.Authorize("agent-loop", "task-x", policy); err == nil {
+	if _, err := l.Authorize("agent-loop", "task-x", policy); err == nil {
 		t.Error("after 5 calls (=$5 spent), the 6th should be blocked")
 	}
 }
@@ -86,13 +86,13 @@ func TestLedger_ResetsOnNewDay(t *testing.T) {
 
 	l.RecordSpend("agent-1", "task-1", 100, 4.0)
 	policy := AgentPolicy{AgentID: "agent-1", DailyBudgetUSD: 5.0}
-	if err := l.Authorize("agent-1", "task-1", policy); err != nil {
+	if _, err := l.Authorize("agent-1", "task-1", policy); err != nil {
 		t.Fatalf("should still be under budget: %v", err)
 	}
 
 	// Roll over to the next day.
 	current = current.Add(2 * time.Hour)
-	if err := l.Authorize("agent-1", "task-1", policy); err != nil {
+	if _, err := l.Authorize("agent-1", "task-1", policy); err != nil {
 		t.Errorf("the budget should be reset after the UTC day rolls over: %v", err)
 	}
 	snap := snapshotFor(t, l, "agent-1")
