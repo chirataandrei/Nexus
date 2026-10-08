@@ -75,6 +75,25 @@ type Config struct {
 	DefaultTokenTTLSeconds int `json:"default_token_ttl_seconds,omitempty"`
 	MaxTokenTTLSeconds     int `json:"max_token_ttl_seconds,omitempty"`
 
+	// IdentityKeyFile is where the token-signing Ed25519 key is persisted
+	// (created on first start, mode 0600). The kid in every token points
+	// at it, so tokens survive restarts and the key can be rotated.
+	IdentityKeyFile string `json:"identity_key_file"`
+	// IdentityRetiredKeysFile optionally lists public keys of rotated-out
+	// identity keys ({"<kid>": "<base64 pub>"}) still accepted for tokens
+	// issued before the rotation.
+	IdentityRetiredKeysFile string `json:"identity_retired_keys_file,omitempty"`
+	// TokenMaxFailuresPerIP / TokenMaxFailuresPerAgent / TokenFailureWindowSeconds
+	// tune the brute-force limits on the token endpoint (0 = defaults).
+	TokenMaxFailuresPerIP     int `json:"token_max_failures_per_ip,omitempty"`
+	TokenMaxFailuresPerAgent  int `json:"token_max_failures_per_agent,omitempty"`
+	TokenFailureWindowSeconds int `json:"token_failure_window_seconds,omitempty"`
+
+	// AdminTokenSHA256 is the hex SHA-256 of the admin token required by
+	// /nexus/control/* and /nexus/finops/policies (see nexus-agentctl
+	// -gen-admin-token).
+	AdminTokenSHA256 string `json:"admin_token_sha256"`
+
 	// FinOpsPoliciesFile is the path to the per-agent financial policies
 	// (configs/finops_policies.json): daily budget and per-task token
 	// limit.
@@ -86,6 +105,23 @@ type Config struct {
 	// ComplianceRetentionMonths is the declared retention policy,
 	// required to be at least 6 — the explicit requirement of Article 12.
 	ComplianceRetentionMonths int `json:"compliance_retention_months"`
+	// ComplianceFailClosed: if true, a request whose audit record can't be
+	// written is refused with 503 instead of being forwarded un-audited.
+	// Default false (fail-open) — see docs/THREAT_MODEL.md for the trade-off.
+	ComplianceFailClosed bool `json:"compliance_fail_closed,omitempty"`
+	// ComplianceAnchorFile is where signed ledger anchors are appended.
+	// Empty disables anchoring. Put it on a different volume than the
+	// ledger so one compromise doesn't cover both.
+	ComplianceAnchorFile string `json:"compliance_anchor_file,omitempty"`
+	// ComplianceAnchorKeyFile is the Ed25519 key signing anchors; kept
+	// separate from the identity key (created on first start).
+	ComplianceAnchorKeyFile string `json:"compliance_anchor_key_file,omitempty"`
+	// ComplianceAnchorRetiredKeysFile: rotated-out anchor public keys.
+	ComplianceAnchorRetiredKeysFile string `json:"compliance_anchor_retired_keys_file,omitempty"`
+	// ComplianceAnchorEveryRecords / ComplianceAnchorIntervalSeconds:
+	// anchor after this many records and at least this often (0 = 100 / 60s).
+	ComplianceAnchorEveryRecords    int `json:"compliance_anchor_every_records,omitempty"`
+	ComplianceAnchorIntervalSeconds int `json:"compliance_anchor_interval_seconds,omitempty"`
 	// MaxPromptExcerptBytes limits how many bytes of the request body are
 	// copied as readable text into the compliance chain (the SHA-256
 	// digest is always full). 0 = defaults to 4096.
@@ -126,6 +162,21 @@ func (c Config) MaxTokenTTL() time.Duration {
 	return time.Duration(c.MaxTokenTTLSeconds) * time.Second
 }
 
+// AnchorEvery and AnchorInterval return the anchoring cadence.
+func (c Config) AnchorEvery() int {
+	if c.ComplianceAnchorEveryRecords <= 0 {
+		return 100
+	}
+	return c.ComplianceAnchorEveryRecords
+}
+
+func (c Config) AnchorInterval() time.Duration {
+	if c.ComplianceAnchorIntervalSeconds <= 0 {
+		return time.Minute
+	}
+	return time.Duration(c.ComplianceAnchorIntervalSeconds) * time.Second
+}
+
 // Load reads and validates a JSON configuration file from disk.
 func Load(path string) (*Config, error) {
 	raw, err := os.ReadFile(path)
@@ -158,6 +209,18 @@ func (c Config) Validate() error {
 	}
 	if c.AgentsFile == "" {
 		return fmt.Errorf("config: agents_file is required (agent registry)")
+	}
+	if c.IdentityKeyFile == "" {
+		return fmt.Errorf("config: identity_key_file is required (persisted token-signing key)")
+	}
+	if len(c.AdminTokenSHA256) != 64 {
+		return fmt.Errorf("config: admin_token_sha256 is required (64 hex chars; generate with nexus-agentctl -gen-admin-token)")
+	}
+	if c.MaxTokenTTLSeconds > 24*60*60 || c.DefaultTokenTTLSeconds > 24*60*60 {
+		return fmt.Errorf("config: token TTLs cannot exceed 24h (the revocation list's retention)")
+	}
+	if c.ComplianceAnchorFile != "" && c.ComplianceAnchorKeyFile == "" {
+		return fmt.Errorf("config: compliance_anchor_key_file is required when compliance_anchor_file is set")
 	}
 	if c.FinOpsPoliciesFile == "" {
 		return fmt.Errorf("config: finops_policies_file is required (budget policies)")

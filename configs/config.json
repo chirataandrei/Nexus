@@ -5,11 +5,18 @@
   "shutdown_timeout_seconds": 10,
   "trust_domain": "nexus.trust",
   "agents_file": "configs/agents.json",
+  "identity_key_file": "data/identity.key.json",
+  "admin_token_sha256": "ff1ff122ff95fbdb880f6b9762c7ef94cfa8c95adff295d0ba84ebe903e2a1a8",
   "default_token_ttl_seconds": 300,
   "max_token_ttl_seconds": 300,
   "finops_policies_file": "configs/finops_policies.json",
   "compliance_ledger_file": "data/compliance_ledger.jsonl",
   "compliance_retention_months": 6,
+  "compliance_fail_closed": false,
+  "compliance_anchor_file": "data/compliance_anchors.jsonl",
+  "compliance_anchor_key_file": "data/anchor.key.json",
+  "compliance_anchor_every_records": 100,
+  "compliance_anchor_interval_seconds": 60,
   "max_prompt_excerpt_bytes": 4096,
   "upstreams": [
     {
